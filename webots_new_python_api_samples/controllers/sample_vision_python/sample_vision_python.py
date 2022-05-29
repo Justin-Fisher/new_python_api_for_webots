@@ -31,7 +31,7 @@ import world
 
 camera = robot.Camera("camera")  # this automatically enables the camera too
 
-display = robot.Display("proc_im_display")
+display = robot.Display()  # When there is only one instance of a class, providing its name is optional
 
 keyboard = robot.keyboard  # give keyboard local name for easy reference; this also automatically enables it
 
@@ -113,6 +113,7 @@ print("Press A to apply all filters.")
 print("Press N to remove all filters.")
 print("When one or more filters is applied, only the matching colors are included in the image.")
 print("The processed image consists of the entire image if no filter is used.")
+update_filter_label(active_filters)  # make label show initial filters
 
 # === Main loop ===
 

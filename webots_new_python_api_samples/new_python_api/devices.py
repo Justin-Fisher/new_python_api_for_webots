@@ -134,8 +134,10 @@ class Device(metaclass=MetaDevice):
        generally preferable as it will provide better type-hinting and documentation for users of Python editors
        that support such niceties, like PyCharm. The given name_or_index should either be a string corresponding
        to the name field of the relevant device node, or an integer index ranging from 0 up to the number of devices
-       the robot has (accessible via len(robot.devices)). If a Python Device object with this name/index and class
-       already exists, it will be returned to avoid duplicating Python objects controlling the same device node.
+       the robot has (accessible via len(robot.devices)). If name_or_index is omitted, then the first of the robot's
+       devices matching the class will be returned. E.g. robot.Camera() returns its first (and often only) camera.
+       If a Python Device object for the relevant device already exists, it will be returned to avoid duplicating
+       Python objects controlling the same device node.
        Otherwise, a new Python Device object will be created, belonging to the relevant subclass like LightSensor.
        If no device with the given name/index and a compatible class is found, None is returned.
        Whenever any Sensor device (e.g. GPS or Camera) is created, if `sampling` is omitted or True, the
@@ -149,7 +151,7 @@ class Device(metaclass=MetaDevice):
                                    # and will then be used to help supplement some gaps in the ordinary robot API
 
     def __new__(cls: type,
-                name_or_index: Union[str, int],
+                name_or_index: Union[str, int] = None,
                 sampling: Union[int, bool, None] = True) -> Optional['Device']:
         if isinstance(name_or_index, str):  # if given a name, like "motor1"
             tag = wb.wb_robot_get_device(name_or_index.encode())
@@ -159,6 +161,8 @@ class Device(metaclass=MetaDevice):
             tag = wb.wb_robot_get_device_by_index(name_or_index)  # if in bounds returns 1+index, else warns&returns 0
             if not tag: return None
             name = None
+        elif name_or_index is None:
+            return next(iter(cls), None)
         else:
             raise TypeError(f"Argument {name_or_index} passed to {cls.__name__} constructor "
                             f"was not a string name nor an integer index")
@@ -2882,7 +2886,7 @@ class Brush(metaclass=MetaBrush):
             # loc = locals()
             # settings = {k: loc[k] for k in Brush.default_settings if loc[k] is not None}
             ## But we'll assume that all locals (but a few we'll pop) are settings worth keeping, so just filter Nones
-            settings = {k: v for k, v in locals().items() if k is not 'self' and v is not None}
+            settings = {k: v for k, v in locals().items() if k != 'self' and v is not None}
             brushes = settings.pop('brushes', ())
             weight = settings.pop('weight', None)
             if weight is None: weight = brushes[-1].weight if brushes else self.weight  # "rightmost wins"
@@ -2975,7 +2979,7 @@ class Brush(metaclass=MetaBrush):
             # loc = locals()
             # settings = {k: loc[k] for k in Brush.default_settings if loc[k] is not None}
             ## But we'll assume that all locals (but a few we'll pop) are settings worth keeping, so just filter Nones
-            settings = {k: v for k, v in locals().items() if k is not 'self' and v is not None}
+            settings = {k: v for k, v in locals().items() if k != 'self' and v is not None}
             brushes = settings.pop('brushes', ())
             weight = settings.pop('weight', None)
             if weight is None: weight = brushes[-1].weight if brushes else self.weight  # "rightmost wins"
@@ -3368,6 +3372,61 @@ class MetaBrushDevice(MetaBrush, MetaDevice):
     pass
 
 class Display(Brush, Device, metaclass=MetaBrushDevice):
+    """A Python Display object is used to control a display node in the webots simulation, whose image may be altered
+       by this controller, and may be viewed in a pop-up window and/or upon the surface of some simulated object,
+       like a viewscreen or chameleon skin.
+       Many display.commands employ various brush settings that affect how the drawing will occur.
+           color: like other python Webots colors, this is usually as a sequence [red, green, blue], each 0..1,
+                  though you may also specify hex colors as python integers (0-16777215) or hex (up to 0xFFFFFF).
+                  If a 4th alpha parameter is given, it will be used as the alpha.
+           alpha:  0..1 The transparency..opacity drawn parts of the display will have. Lower values will reveal
+                   more of the background behind the display.
+           opacity:  The default extent 0..1 to which drawing will affect what is already present on the display.
+           weight:  For most brushes this is 1.  weight * opacity is the actual extent (capped at 1) to which
+                    drawing with this brush will affect what is already present on the display.  Weight also
+                    determines a brush's relative contribution when added to another brush.
+           offset: A 2D sequence [x,y] indicating the number of display pixels to shift drawing.
+           thickness:  A 2D sequence [x,y] indicating brush width and height.  Larger brushes are simulated by
+                       repeatedly drawing/writing with different offsets. Each brush has the shape of a plus-sign,
+                       centered around the given coordinates for drawing.  If you don't want drawn pixels/endpoints
+                       to look like +, you may want to draw over them with something like an oval.
+                       TODO or it might make sense eventually to offer an endcap option.
+           hardness: A brush with hardness 1 has its full opacity thoughout its thickness (like a permanent marker).
+                     Lower hardnesses fade out to the given hardness at their periphery (like an airbrush).
+           font: The name of the font to use (default "Lucida Console")
+           fontsize: in pixels (default 8)
+           antialiasing: True indicates that the font edges will be smoothed; False not
+       Each draw command will be initiated from a Brush object that stores a collection of brush settings.
+       Simple common draw commands call display(...) to create a Brush with keyword settings, and immediately
+       use a method of that brush to draw using those settings. E.g., the following draws a red pixel at x=2, y=1:
+           `display(color=[1,0,0]).pixel(2, 1)`
+       Brush objects can be assigned to variables, e.g. with `thick_red = display(color[1,0,0], thickness=[3,3])`.
+       After this, draw commands like `thick_red.oval(center, radii)` will draw re-using that brush's settings.
+       Each brush is tied to a particular Display object, the one its methods like .oval() would draw to.
+       `display2(brush1)` returns a brush tied to display2, rather than whatever display brush1 was tied to.
+       When using brushes in multiple displays, a common pattern will be `display2(brush).oval(...)`
+       Brushes may be combined in three ways:
+          brush1(brush2)   returns an augmented version of brush1 with brush2 settings taking precedence.
+                           This accepts zero or more brush args, with later ones taking higher precedence.
+                           And it accepts keyword args, like `opacity=1` to augment particular settings.
+          brush1 + brush2  adds the settings of the two brushes, adjusted by their weight.  It is often useful
+                           to use this along with multipliers to produce a weighted average, e.g., red/4 + 3/4*blue.
+          brush1 & brush2  returns a multibrush whose draw commands will be run twice, first with the
+                           settings of brush1, then with the settings of brush2.
+                           E.g. `(shadow & red).text(...)` could draw an offset shadow with red text atop it.
+       Brush settings may be read/changed like python properties, e.g. brushname.color returns the current color,
+       or brushname.color = newcolor changes the color.  Multiple settings can be changed at once with keyword
+       arguments: brushname.set(color = ..., opacity = ...).  Also brush1.set(brush2) copies brush2's
+       settings to brush1.
+       The display device itself is a Brush, so its settings could be adjusted in the ways just described,
+       e.g. with display.set(opacity=1), display.set(brush2), or display.opacity=1. The display's own settings
+       will be used (1) for draw commands issued from the display itself, e.g., display.oval(...), and (2) as
+       default settings for draw commands issued by brushes within that display.
+       Changing a display's default settings can be useful if those settings will rarely change, e.g. in a
+       monochromatic display.  However changes to these settings will linger until changed again, which may
+       bring about unwanted effects.  So it is often advisable to instead use brushes to temporarily draw
+       with particular settings, with no risk of unwanted lingering effects."""
+
     # Since each display is a Brush, it automatically inherits draw commands like display.ellipse from Brush.
     Brush = Brush  # Now the Brush class is accessible as Display.Brush
 
@@ -3378,60 +3437,8 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
     ABGR = WB_IMAGE_ABGR
     initialized = False  # will be changed on first call to __init__
 
-    def __init__(self, name_or_index: Union[str, int]):
-        """A Display device is used to control a display node in the webots simulation, whose surface texture may
-           be altered by this controller, like a viewscreen or chameleon skin.
-           Many display.commands employ various brush settings that affect how the drawing will occur.
-               color: like other python Webots colors, this is usually as a sequence [red, green, blue], each 0..1,
-                      though you may also specify hex colors as python integers (0-16777215) or hex (up to 0xFFFFFF).
-                      If a 4th alpha parameter is given, it will be used as the alpha.
-               alpha:  0..1 The transparency..opacity drawn parts of the display will have. Lower values will reveal
-                       more of the background behind the display.
-               opacity:  The default extent 0..1 to which drawing will affect what is already present on the display.
-               weight:  For most brushes this is 1.  weight * opacity is the actual extent (capped at 1) to which
-                        drawing with this brush will affect what is already present on the display.  Weight also
-                        determines a brush's relative contribution when added to another brush.
-               offset: A 2D sequence [x,y] indicating the number of display pixels to shift drawing.
-               thickness:  A 2D sequence [x,y] indicating brush width and height.  Larger brushes are simulated by
-                           repeatedly drawing/writing with different offsets. Each brush has the shape of a plus-sign,
-                           centered around the given coordinates for drawing.  If you don't want drawn pixels/endpoints
-                           to look like +, you may want to draw over them with something like an oval.
-                           TODO or it might make sense eventually to offer an endcap option.
-               hardness: A brush with hardness 1 has its full opacity thoughout its thickness (like a permanent marker).
-                         Lower hardnesses fade out to the given hardness at their periphery (like an airbrush).
-               font: The name of the font to use (default "Lucida Console")
-               fontsize: in pixels (default 8)
-               antialiasing: True indicates that the font edges will be smoothed; False not
-           Each draw command will be initiated from a Brush object that stores a collection of brush settings.
-           Simple common draw commands call display(...) to create a Brush with keyword settings, and immediately
-           use a method of that brush to draw using those settings. E.g., the following draws a red pixel at x=2, y=1:
-               `display(color=[1,0,0]).pixel(2, 1)`
-           Brush objects can be assigned to variables, e.g. with `thick_red = display(color[1,0,0], thickness=[3,3])`.
-           After this, draw commands like `thick_red.oval(center, radii)` will draw re-using that brush's settings.
-           Each brush is tied to a particular Display object, the one its methods like .oval() would draw to.
-           `display2(brush1)` returns a brush tied to display2, rather than whatever display brush1 was tied to.
-           When using brushes in multiple displays, a common pattern will be `display2(brush).oval(...)`
-           Brushes may be combined in three ways:
-              brush1(brush2)   returns an augmented version of brush1 with brush2 settings taking precedence.
-                               This accepts zero or more brush args, with later ones taking higher precedence.
-                               And it accepts keyword args, like `opacity=1` to augment particular settings.
-              brush1 + brush2  adds the settings of the two brushes, adjusted by their weight.  It is often useful
-                               to use this along with multipliers to produce a weighted average, e.g., red/4 + 3/4*blue.
-              brush1 & brush2  returns a multibrush whose draw commands will be run twice, first with the
-                               settings of brush1, then with the settings of brush2.
-                               E.g. `(shadow & red).text(...)` could draw an offset shadow with red text atop it.
-           Brush settings may be read/changed like python properties, e.g. brushname.color returns the current color,
-           or brushname.color = newcolor changes the color.  Multiple settings can be changed at once with keyword
-           arguments: brushname.set(color = ..., opacity = ...).  Also brush1.set(brush2) copies brush2's
-           settings to brush1.
-           The display device itself is a Brush, so its settings could be adjusted in the ways just described,
-           e.g. with display.set(opacity=1), display.set(brush2), or display.opacity=1. The display's own settings
-           will be used (1) for draw commands issued from the display itself, e.g., display.oval(...), and (2) as
-           default settings for draw commands issued by brushes within that display.
-           Changing a display's default settings can be useful if those settings will rarely change, e.g. in a
-           monochromatic display.  However changes to these settings will linger until changed again, which may
-           bring about unwanted effects.  So it is often advisable to instead use brushes to temporarily draw
-           with particular settings, with no risk of unwanted lingering effects."""
+    def __init__(self, name_or_index: Union[str, int] = None):
+
         # Device() uses __new__ to find/construct devices, and each time this display gets found again, its __init__
         # will be called again.  So we take care to do one-time initialization steps just once.
         if not self.initialized:
