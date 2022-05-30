@@ -35,22 +35,22 @@ initial_pos = target.position  # the position of the target in global coordinate
 # How often should we add a new point to the trail?
 refresh_period = world.timestep_ms * REFRESH_FACTOR
 
-# If any TRAIL_LINE_SET already exists in the world, silently remove it and its parent Shape
-while world.Node("TRAIL_LINE_SET"):
-    world.TRAIL_LINE_SET.parent.remove()
+# If any TRAIL already exists in the world, silently remove it and its parent Shape
+while world.Node("TRAIL"):
+    world.TRAIL.parent.remove()
 
-# Create a new TRAIL_LINE_SET (and a containing Shape and associated Appearance)
+# Create a new TRAIL (and a containing Shape and associated Appearance)
 plan = world.plan  # for easier repeated reference
-trail_plan = plan.IndexedLineSet(DEF = "TRAIL_LINE_SET",
+trail_plan = plan.IndexedLineSet(DEF = "TRAIL",
                                  material = plan.Material(diffuseColor=TRAIL_COLOR, emissiveColor=TRAIL_COLOR),
                                  coord = plan.Coordinate(point=[initial_pos] * (TRAIL_LENGTH+1)),
                                  coordIndex = [0] * (TRAIL_LENGTH+2)
                                 )
 world.children.append(trail_plan)
 
-# Store convenient references to relevant TRAIL_LINE_SET fields.
-point_field = world.TRAIL_LINE_SET.coord.point  # list of 3D coordinates of points along the trail
-index_field = world.TRAIL_LINE_SET.coordIndex   # list of successive indices of those points to connect, broken by -1
+# Store convenient references to relevant TRAIL fields.
+point_field = world.TRAIL.coord.point  # list of 3D coordinates of points along the trail
+index_field = world.TRAIL.coordIndex   # list of successive indices of those points to connect, broken by -1
 
 # If TRAIL_LENGTH is 9, then there would be 10 slots in point_field (always including at least 1 unused "gap"),
 # and 11 slots in index_field (including gap and duplicated start/end). It will often look something like this:
