@@ -32,6 +32,8 @@ from WB_CONSTANTS import * # import all Webots constants at global scope
 # wb = ctypes.CDLL(r"D:\Program Files\Webots\lib\controller\Controller")
 wb = ctypes.cdll.LoadLibrary(_os.path.join(_os.environ['WEBOTS_HOME'], 'lib', 'controller', 'Controller.dll'))
 
+# === Initializing the robot/supervisor ===
+
 def init(again = True):
     """Initializes this Python controller's control over a robot.
        This is automatically called when importing world or robot, so users typically needn't call this explicitly.
@@ -52,6 +54,7 @@ def init(again = True):
     init.has_been_initialized = True
 init.has_been_initialized = False
 
+# === Handling robot.time / world.time ===
 
 wb.wb_robot_get_time.restype = ctypes.c_double
 wb.wb_robot_get_basic_time_step.restype = ctypes.c_double
@@ -106,6 +109,8 @@ class timed_cached_property:
         return self
     set = setter # an alias for setter to avoid current linting bugs
 
+# === robot.step / world.step ===
+
 class StepReturnValue(int):
     """The return value of robot.step and world.step will be coerced to be of this class.  Unlike an ordinary integer,
        this will have boolean True if the integer differs from settings.false_step_return_value which defaults to -1,
@@ -143,8 +148,14 @@ def step(duration:int = True, exit = SystemExit) -> StepReturnValue:
         raise SystemExit("This controller was stopped by Webots.")
     return value
 
+# === Console coloration constants ===
 
+# TODO could make sense to make this its own little module, to allow from console import *
 class Console:
+    """This class is not expected to be instantiated, and serves only as a container for various .attributes.
+       In print commands, these strings change the coloration of text printed to the Python/Webots console.
+       Example: print(f"{Console.RED}HELLO {Console.YELLOW_BACK}WORLD!{Console.RESET}"""
+
     RESET = u'\u001b[0m'
 
     BOLD = u'\u001b[1m'
@@ -172,4 +183,3 @@ class Console:
 
     @staticmethod
     def clear(): print(u'\u001b[2J')
-Console2 = Console
