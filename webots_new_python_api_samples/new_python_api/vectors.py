@@ -24,7 +24,7 @@ import collections
 import itertools
 import operator
 from math import sin, cos, acos, sqrt, atan2
-from typing import Sequence, Iterable
+from typing import Sequence, Iterable, TypeVar, Generic
 import sys
 from ctypes import c_double, c_void_p, POINTER, c_ubyte
 from typing import List, Tuple, Set, Union, Optional
@@ -100,8 +100,10 @@ class OutputTypeDict(dict):
         return answer
 output_type = OutputTypeDict()
 
+VectorType = TypeVar('VectorType')
+ContentType = TypeVar('ContentType')
 
-class GenericVector:
+class GenericVector(Generic[ContentType]):
     """This abstract class includes various generic vector methods that work equally with both
          (a) Vectors, which are lists and store their components directly as list members, and
          (b) VectorValues, which instead are surrogates that store their components in their .value
@@ -149,35 +151,35 @@ class GenericVector:
     #---Referring to vector coordinates ------
 
     @property
-    def x(self):
+    def x(self: 'GenericVector[ContentType]') -> ContentType:
         """The x/r/red component of this vector, stored as vector[0]"""
         return self[0]
     @x.setter
-    def x(self, new_value): self[0] = new_value
+    def x(self:'GenericVector[ContentType]', new_value: ContentType): self[0] = new_value
 
     @property
-    def y(self):
+    def y(self:'GenericVector[ContentType]') -> ContentType:
         """The y/g/green component of this vector, stored as vector[1]"""
         return self[1]
     @y.setter
-    def y(self, new_value): self[1] = new_value
+    def y(self:'GenericVector[ContentType]', new_value: ContentType): self[1] = new_value
 
     @property
-    def z(self):
+    def z(self:'GenericVector[ContentType]') -> ContentType:
         """The z/b/blue component of this vector, stored as vector[2]"""
         return self[2]
     @z.setter
-    def z(self, new_value): self[2] = new_value
+    def z(self:'GenericVector[ContentType]', new_value: ContentType): self[2] = new_value
 
     @property
-    def a(self):
+    def a(self:'GenericVector[ContentType]') -> ContentType:
         """The a/alpha component of this vector, stored as vector[3]"""
         return self[3]
     @a.setter
-    def a(self, new_value): self[3] = new_value
+    def a(self:'GenericVector[ContentType]', new_value: ContentType): self[3] = new_value
 
     @property
-    def xy(self):
+    def xy(self:VectorType) -> VectorType:
         """A vector copying this vector's first 2 (.x and .y) components.
            Setting vector.xy = new_value alters these two components, broadcasting the new_value if necessary."""
         return output_type[type(self)](self[0], self[1])
@@ -189,7 +191,7 @@ class GenericVector:
             self[0] = self[1] = new_value # broadcast atom to both slots, e.g. vec.xy=0
 
     @property
-    def xz(self):
+    def xz(self:VectorType) -> VectorType:
         """Getting this returns a vector copying this vector's first 3 components, but with its .y component set to 0.
            Setting vector.xz = new_value alters these components, broadcasting the new_value if necessary.
            When new_value is a sequence its first and last components will be used, e.g in v1.xz = v2.xz.
@@ -197,33 +199,33 @@ class GenericVector:
            often useful in fairly-flat simulations where the y-axis is vertical.  See also vector.angle_xz."""
         return output_type[type(self)]( self[0], 0, self[2] )
     @xz.setter
-    def xz( self, new_value ):
+    def xz(self, new_value):
         if isinstance(new_value, Sequence):
             self[0], self[2] = new_value[0], new_value[-1] # unpack new_value's first and last to designated slots
         else:
             self[0] = self[2] = new_value # broadcast atom to both slots
 
     @property
-    def yz(self):
+    def yz(self:VectorType) -> VectorType:
         """Getting this returns a vector copying this vector's first 3 components, but with its .x component set to 0.
            Setting vector.yz = new_value alters these components, broadcasting the new_value if necessary.
            When new_value is a sequence its last two components will be used, e.g in v1.yz = v2.yz."""
         return output_type[type(self)]( self[1], 0, self[2] )
     @yz.setter
-    def yz( self, new_value ):
+    def yz(self, new_value):
         if isinstance(new_value, Sequence):
             self[1], self[2] = new_value[-2], new_value[-1] # unpack sequence's last two values to designated slots
         else:
             self[1] = self[2] = new_value # broadcast atom to both slots
 
     @property
-    def xyz(self):
+    def xyz(self:VectorType) -> VectorType:
         """vector.xyz returns a vector copying this vector's first 3 components.
            Setting vector.xyz = new_value unpacks the first three components of a sequence-like new_value to the
            corresponding positions in vector, or broadcasts a scalar new_value to all three positions."""
         return output_type[type(self)]( self[0], self[1], self[2] )
     @xyz.setter
-    def xyz( self, new_value ):
+    def xyz(self, new_value):
         if isinstance(new_value, Sequence):
             self[0], self[1], self[2] = new_value[0],new_value[1],new_value[2] # unpack sequence
         else:
@@ -244,51 +246,51 @@ class GenericVector:
     def __int__(self) -> 'Vector':  # TODO seems unable to work, as there is type-checking for if this returns int!!!
         return output_type[type(self)](int(x) for x in self)
 
-    def __add__(self, other) -> 'Vector':
+    def __add__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](s + o for s, o in zip(self, other))
         return output_type[type(self)](s + other for s in self)  # broadcast scalar
 
-    def __radd__(self, other) -> 'Vector':
+    def __radd__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](o + s for o, s in zip(other, self))
         return output_type[type(self)](other + s for s in self)  # broadcast scalar
 
-    def __sub__(self, other) -> 'Vector':
+    def __sub__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](s - o for s, o in zip(self, other))
         return output_type[type(self), type(other)](s - other for s in self)  # broadcast scalar
 
-    def __rsub__(self, other) -> 'Vector':
+    def __rsub__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](o - s for o, s in zip(other, self))
         return output_type[type(self)](other - s for s in self)  # broadcast scalar
 
-    def __mul__(self, other) -> 'Vector':
+    def __mul__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](s * o for s, o in zip(self, other))
         return output_type[type(self)](s * other for s in self)  # broadcast scalar
 
-    def __rmul__(self, other) -> 'Vector':
+    def __rmul__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](o * s for o, s in zip(other, self))
         return output_type[type(self)](other * s for s in self)  # broadcast scalar
 
-    def __truediv__(self, other) -> 'Vector':
+    def __truediv__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](s / o for s, o in zip(self, other))
         return output_type[type(self)](s / other for s in self)  # broadcast scalar
 
-    def __rtruediv__(self, other) -> 'Vector':
+    def __rtruediv__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](o / s for o, s in zip(other, self))
         return output_type[type(self)](other / s for s in self)  # broadcast scalar
 
-    def __floordiv__(self, other) -> 'Vector':
+    def __floordiv__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](s // o for s, o in zip(self, other))
         return output_type[type(self)](s // other for s in self)  # broadcast scalar
 
-    def __rfloordiv__(self, other) -> 'Vector':
+    def __rfloordiv__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](o // s for o, s in zip(other, self))
         return output_type[type(self)](other // s for s in self)  # broadcast scalar
 
-    def __mod__(self, other) -> 'Vector':
+    def __mod__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](s % o for s, o in zip(self, other))
         return output_type[type(self)](s % other for s in self)  # broadcast scalar
 
-    def __rmod__(self, other) -> 'Vector':
+    def __rmod__(self:VectorType, other) -> VectorType:
         if isinstance(other, Iterable): return output_type[type(self), type(other)](o % s for o, s in zip(other, self))
         return output_type[type(self)](other % s for s in self)  # broadcast scalar
 
@@ -538,7 +540,7 @@ class Color(Vector, GenericColor):
         else:
             list.__init__(self, (red_or_combined or red or r, green or g, blue or b))
 
-class CTypesVector( GenericVector ):
+class CTypesVector( GenericVector[ContentType] ):
     _length: int # will be set by subclasses, designates expected length of this vector; __init__ will enforce
     def __init__(self, *args:Union[float,Iterable[float]]):
         if len(args)==1: args = args[0]
@@ -578,12 +580,12 @@ class Vec4f( CTypesVector, c_double*4 ):
 Vec4f_p = POINTER(Vec4f)
 
 @Sequence.register
-class ColorBGRA( CTypesVector, c_ubyte*4):
-    _length = 4
+class ColorBGRA( CTypesVector[int], c_ubyte*4):
     """This is a 4-component color vector whose content is contained in a ctypes array of 4 bytes, ordered BGRA.
        Color components are accessible as .b/.blue, .g/.green, .r/.red and .a/.alpha.
-       Note that ordinary Color objects are ordered RGBA not BGRA.  BGRA colors are used internally by webots for 
-       Camera images and Display images."""
+       Note that ordinary Color vectors are ordered RGBA not BGRA.  BGRA colors are used internally by webots for
+       Camera images and Display images. For most other purposes ordinary Color vectors are recommended."""
+    _length = 4
     preferred_output_type = Color
     # TODO sort out vector arithmetic between ordinary colors and BGRA colors
     r = red = GenericVector.z
@@ -646,35 +648,35 @@ class VectorValue(GenericVector, SurrogateValue):
     # Note: the versions inherited from GenericVector would work fine, so we overwrite only the most used for efficiency
 
     @property
-    def x(self):
+    def x(self:'VectorValue[ContentType]') -> ContentType:
         """The x/r/red component of this vector, stored as vector[0]"""
         return self.value[0]
     @x.setter
-    def x(self, new_value): self.value[0] = new_value
+    def x(self:'VectorValue[ContentType]', new_value: ContentType): self.value[0] = new_value
     r = red = x
 
     @property
-    def y(self):
+    def y(self:'VectorValue[ContentType]') -> ContentType:
         """The y/g/green component of this vector, stored as vector[1]"""
         return self.value[1]
     @y.setter
-    def y(self, new_value): self.value[1] = new_value
+    def y(self:'VectorValue[ContentType]', new_value: ContentType): self.value[1] = new_value
     g = green = y
 
     @property
-    def z(self):
+    def z(self:'VectorValue[ContentType]') -> ContentType:
         """The z/b/blue component of this vector, stored as vector[2]"""
         return self.value[2]
     @z.setter
-    def z(self, new_value): self.value[2] = new_value
+    def z(self:'VectorValue[ContentType]', new_value: ContentType): self.value[2] = new_value
     b = blue = z
 
     @property
-    def a(self):
+    def a(self:'VectorValue[ContentType]') -> ContentType:
         """The a/alpha component of this vector, stored as vector[3]"""
         return self.value[3]
     @a.setter
-    def a(self, new_value): self.value[3] = new_value
+    def a(self:'VectorValue[ContentType]', new_value: ContentType): self.value[3] = new_value
     alpha = a
 
     # --- vector arithmetic -------------------
@@ -687,40 +689,40 @@ class VectorValue(GenericVector, SurrogateValue):
         return output_type[type(self)]( abs(x) for x in self.value )
     def __round__(self, n=None ) -> 'Vector':
         return output_type[type(self)]( round(x, n) for x in self.value )
-    def __add__(self, other) -> 'Vector':
+    def __add__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( s + o for s,o in zip(self.value,other))
         return output_type[type(self)]( s + other for s in self.value ) # broadcast scalar
-    def __radd__(self, other) -> 'Vector':
+    def __radd__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( o + s for o,s in zip(other, self.value))
         return output_type[type(self)]( other + s for s in self.value ) # broadcast scalar
-    def __sub__(self, other) -> 'Vector':
+    def __sub__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( s - o for s,o in zip(self.value,other))
         return output_type[type(self)]( s - other for s in self.value ) # broadcast scalar
-    def __rsub__(self, other) -> 'Vector':
+    def __rsub__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( o - s for o,s in zip(other, self.value))
         return output_type[type(self)]( other - s for s in self.value ) # broadcast scalar
-    def __mul__(self, other) -> 'Vector':
+    def __mul__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( s * o for s,o in zip(self.value,other))
         return output_type[type(self)]( s * other for s in self.value ) # broadcast scalar
-    def __rmul__(self, other) -> 'Vector':
+    def __rmul__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( o * s for o,s in zip(other, self.value))
         return output_type[type(self)]( other * s for s in self.value ) # broadcast scalar
-    def __truediv__(self, other) -> 'Vector':
+    def __truediv__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( s / o for s,o in zip(self.value,other))
         return output_type[type(self)]( s / other for s in self.value ) # broadcast scalar
-    def __rtruediv__(self, other) -> 'Vector':
+    def __rtruediv__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( o / s for o,s in zip(other, self.value))
         return output_type[type(self)]( other / s for s in self.value ) # broadcast scalar
-    def __floordiv__(self, other) -> 'Vector':
+    def __floordiv__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( s // o for s,o in zip(self.value,other))
         return output_type[type(self)]( s // other for s in self.value ) # broadcast scalar
-    def __rfloordiv__(self, other) -> 'Vector':
+    def __rfloordiv__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( o // s for o,s in zip(other, self.value))
         return output_type[type(self)]( other // s for s in self.value ) # broadcast scalar
-    def __mod__(self, other) -> 'Vector':
+    def __mod__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( s % o for s,o in zip(self.value,other))
         return output_type[type(self)]( s % other for s in self.value ) # broadcast scalar
-    def __rmod__(self, other) -> 'Vector':
+    def __rmod__(self:VectorType, other) -> VectorType:
         if isinstance(other,Iterable): return output_type[type(self), type(other)]( o % s for o,s in zip(other, self.value))
         return output_type[type(self)]( other % s for s in self.value ) # broadcast scalar
 
@@ -817,7 +819,6 @@ class VectorValue(GenericVector, SurrogateValue):
     def angle_yz(self, a):
         mag = sqrt(self.value[1]**2 + self.value[2]**2)
         self.value[1], self.value[2] = mag * sin(a), mag * cos(a)
-
 
     def clamp(self, lo, hi) -> 'VectorValue':
         """Adjusts self to be between lo and hi, which may be scalar or vector. Returns self, thus adjusted."""
