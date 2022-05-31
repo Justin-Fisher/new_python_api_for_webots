@@ -156,6 +156,7 @@ class GenericVector(Generic[ContentType]):
         return self[0]
     @x.setter
     def x(self:'GenericVector[ContentType]', new_value: ContentType): self[0] = new_value
+    l = left = x  # now vector.l and vector.left return vector[0] too
 
     @property
     def y(self:'GenericVector[ContentType]') -> ContentType:
@@ -163,6 +164,7 @@ class GenericVector(Generic[ContentType]):
         return self[1]
     @y.setter
     def y(self:'GenericVector[ContentType]', new_value: ContentType): self[1] = new_value
+    r = right = y  # now vector.r and vector.right return vector[1] too
 
     @property
     def z(self:'GenericVector[ContentType]') -> ContentType:
@@ -653,7 +655,7 @@ class VectorValue(GenericVector, SurrogateValue):
         return self.value[0]
     @x.setter
     def x(self:'VectorValue[ContentType]', new_value: ContentType): self.value[0] = new_value
-    r = red = x
+    l = left = x  # now vector.l and vector.left return vector[0] too
 
     @property
     def y(self:'VectorValue[ContentType]') -> ContentType:
@@ -661,7 +663,7 @@ class VectorValue(GenericVector, SurrogateValue):
         return self.value[1]
     @y.setter
     def y(self:'VectorValue[ContentType]', new_value: ContentType): self.value[1] = new_value
-    g = green = y
+    r = right = y  # now vector.r and vector.right return vector[1] too
 
     @property
     def z(self:'VectorValue[ContentType]') -> ContentType:
@@ -669,7 +671,6 @@ class VectorValue(GenericVector, SurrogateValue):
         return self.value[2]
     @z.setter
     def z(self:'VectorValue[ContentType]', new_value: ContentType): self.value[2] = new_value
-    b = blue = z
 
     @property
     def a(self:'VectorValue[ContentType]') -> ContentType:
@@ -677,7 +678,6 @@ class VectorValue(GenericVector, SurrogateValue):
         return self.value[3]
     @a.setter
     def a(self:'VectorValue[ContentType]', new_value: ContentType): self.value[3] = new_value
-    alpha = a
 
     # --- vector arithmetic -------------------
     # Again, versions inherited from GenericVector will work, so just defining most commonly used for speed
