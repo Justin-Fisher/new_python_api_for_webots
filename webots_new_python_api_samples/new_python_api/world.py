@@ -135,20 +135,30 @@ class Label(_SurrogateValue, metaclass = MetaLabel):
     # TODO create an AcceptableColor type to use in circumstances like this
     def __init__(self, value: _Any = "", pos:Iterable2f=(0.0, 0.0), size=0.1,
                  color: _Union[Iterable3f, Iterable4f, int] = 0xFFBB00,
-                 transparency=0.0, font: str = "default", is_visible=True, index: int = None):
+                 transparency=0.0, font: str = "default", is_visible=True, index: int = None,
+                 shadow = None, shadow_index:int = None, shadow_offset=(0.002, 0.002), shadow_color=(0,0,0,0.8)):
         # We'll just do invariant initialization here, then pass vary-able stuff to update()
+        self.shadow = None
+        if shadow or shadow_index is not None:
+            self.shadow = True
+            self.shadow_index = self.claim_index(shadow_index)
+        self.claim_index(index)
+        if font == "default": font = self.default_font
+        self.update(value=value, pos=pos, size=size, color=color, transparency=transparency,
+                    font=font, is_visible=is_visible, shadow_offset=shadow_offset, shadow_color=shadow_color)
+
+    def claim_index(self, index:int)->int:
         if index is None:
             index = next(i for i in itertools.count(Label.filled_to_index+1) if i not in Label.instances)
             Label.filled_to_index = index
         self.index = index
         Label.instances[index] = self
-        if font == "default": font = self.default_font
-        self.update(value=value, pos=pos, size=size, color=color, transparency=transparency,
-                    font=font, is_visible=is_visible)
+        return index
 
     def update(self, value: _Any = _omitted, pos: Iterable2f = _omitted, size:float = _omitted,
                color:_Union[Iterable3f, Iterable4f, int] = _omitted, transparency: float = _omitted,
-               font: str = _omitted, is_visible: bool = _omitted) -> _Any:
+               font: str = _omitted, is_visible: bool = _omitted,
+               shadow_offset = _omitted, shadow_color = _omitted, ) -> _Any:
         """Updates this label's .attributes as specified in given (keyword) arguments, and updates the onscreen
            display of this label. Returns this label itself (which is a surrogate for its value)."""
         if value is not _omitted: self.value = value
@@ -161,9 +171,20 @@ class Label(_SurrogateValue, metaclass = MetaLabel):
         if transparency is not _omitted: self.color.alpha = 1 - transparency
         if font is not _omitted: self.font = font
         if is_visible is not _omitted: self.is_visible = is_visible
+        if shadow_offset is not _omitted: self.shadow_offset = Vector(shadow_offset)
+        if shadow_color is not _omitted: self.shadow_color = Color(shadow_color)
 
-        text = b"" if not self.is_visible else str(self).encode()
-        wb.wb_supervisor_set_label(self.index, text,
+        self.text = b"" if not self.is_visible else str(self).encode()
+
+        if self.shadow is not None:
+            wb.wb_supervisor_set_label(self.shadow_index, self.text,
+                                       c_double(self.pos.x + self.shadow_offset.x),
+                                       c_double(self.pos.y + self.shadow_offset.y),
+                                       c_double(self.size),
+                                       self.shadow_color.hexcolor, c_double(1 - self.shadow_color.alpha),
+                                       self.font.encode())
+
+        wb.wb_supervisor_set_label(self.index, self.text,
                                    c_double(self.pos.x), c_double(self.pos.y), c_double(self.size),
                                    self.color.hexcolor, c_double(1 - self.color.alpha), self.font.encode())
         return self
@@ -186,6 +207,9 @@ class Label(_SurrogateValue, metaclass = MetaLabel):
         self.update(is_visible=False)
         del Label.instances[self.index]
         Label.filled_to_index = min(Label.filled_to_index, self.index - 1)
+        if self.shadow:
+            del Label.instances[self.shadow_index]
+            Label.filled_to_index = min(Label.filled_to_index, self.shadow_index - 1)
 
 
 class TimerLabel(Label):
@@ -202,7 +226,7 @@ class TimerLabel(Label):
        TimerLabel.__str__ converts the .value to a string, formatted like '1:00', though this could be overwritten
        in an instance/subclass to produce alternate formatting, as in the FuseTimerLabel subclass."""
     default_font = "Impact"
-    def __init__(self, type="digital", duration: float = None,
+    def __init__(self, duration: float = None,
                  pos: Iterable2f = (0.0, 0.0), size=0.1,
                  color: _Union[Iterable3f, Iterable4f, int] = 0xFF1111, transparency=0.0,
                  font: str = "default", is_visible=True, paused = False,

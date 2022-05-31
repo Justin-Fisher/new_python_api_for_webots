@@ -22,6 +22,7 @@ __author__ = "Justin C. Fisher"
 import io
 import itertools
 import json
+import math
 import pickle
 from functools import wraps
 from typing import List, Tuple, Set, Union, Optional, Callable, Any, Sequence, Iterable, TYPE_CHECKING, TypeVar, \
@@ -848,19 +849,18 @@ class TouchSensor(LookUpTableSensor, SurrogateValue):
 # === Image-Sensing Devices (Camera, Lidar, RangeFinder) ===
 
 from typing import TypeVar, Generic, Type
-ImageContentType = TypeVar('ImageContentType', ColorBGRA, float)
+ImagePixelType = TypeVar('ImagePixelType', ColorBGRA, float)
 
-class ImageContainer(Generic[ImageContentType]):
-    """A container for a 2D image, stored as its .value, which consists of rows of items of ImageContentType,
-       where this ImageContentType will either be ColorBGRA (for Cameras) or float (for RangeFinder/Lidar).
-       Camera, RangeFinder, and Lidar devices themselves are ImageContainers, as are copies of their
-       images (and copies of those copies), produced by .copy()
-       This class provides a standard container interface, and conversion to other datatypes.
+class ImageContainer(Generic[ImagePixelType]):
+    """A container for a 2D image, stored as its .value, which consists of rows of items of ImagePixelType,
+       which will either be `ColorBGRA` for Cameras, or `float` for RangeFinders/Lidars.
+       These devices themselves are ImageContainers, as are copies of them (and copies of copies), produced by .copy()
+       The ImageContainer class provides a standard container interface, and conversion to other datatypes.
        ACCESSING PIXELS.
        `image.value` is a ctypes array with a container interface similar to a Python nested list. BEWARE: the .value
        of a Camera/RangeFinder/Lidar its .value will share memory with the Webots simulation, making this value very
        fast to access, but also making it valid only during this timestep! Use `image.copy()` if you'll want it later.
-       `image[y]` returns row y of the image, a 1D ctypes array of instances of its ImageContentType
+       `image[y]` returns row y of the image, a 1D ctypes array of instances of its ImagePixelType
        `image[y,x]` and `image[y][x]` return the pixel in row y, column x. Note y is first!
        Image slicing works with the same limitations as Python nested lists.  E.g. `image[0:2, :]` or `image[0, 0:2]`
        are fine, but `image[0:2, 0:2] is not.  If you have Numpy available, `image.array` has more slicing options.
@@ -878,7 +878,7 @@ class ImageContainer(Generic[ImageContentType]):
        `image.nested_list` returns a 2D list of row-like lists of Lidar readings (slow)"""
 
     # These will be dynamically provided by Device properties, or set in copying
-    value: Sequence[Sequence[ImageContentType]]
+    value: Sequence[Sequence[ImagePixelType]]
     width: int
     height: int
 
@@ -899,15 +899,15 @@ class ImageContainer(Generic[ImageContentType]):
 
     # Two-dimensional __getitem__ can return a variety of value types; we start by type-declaring them
     @overload  # image[slice] returns a sequence of rows
-    def __getitem__(self: 'ImageContainer[ImageContentType]', item: slice) -> Sequence[Sequence[ImageContentType]]: pass
+    def __getitem__(self: 'ImageContainer[ImagePixelType]', item: slice) -> Sequence[Sequence[ImagePixelType]]: pass
     @overload  # image[slice, :] also returns a sequence of rows
-    def __getitem__(self: 'ImageContainer[ImageContentType]', item: Tuple[slice,None]) -> Sequence[Sequence[ImageContentType]]: pass
+    def __getitem__(self: 'ImageContainer[ImagePixelType]', item: Tuple[slice,None]) -> Sequence[Sequence[ImagePixelType]]: pass
     @overload  # image[y] returns a single row
-    def __getitem__(self: 'ImageContainer[ImageContentType]', item: int) -> Sequence[ImageContentType]: pass
+    def __getitem__(self: 'ImageContainer[ImagePixelType]', item: int) -> Sequence[ImagePixelType]: pass
     @overload # image[y, slice] returns a portion of a row
-    def __getitem__(self: 'ImageContainer[ImageContentType]', item: Tuple[int,slice]) -> Sequence[ImageContentType]: pass
+    def __getitem__(self: 'ImageContainer[ImagePixelType]', item: Tuple[int,slice]) -> Sequence[ImagePixelType]: pass
     @overload  # image[y, x] returns a single pixel
-    def __getitem__(self: 'ImageContainer[ImageContentType]', item: Tuple[int,int]) -> ImageContentType: pass
+    def __getitem__(self: 'ImageContainer[ImagePixelType]', item: Tuple[int,int]) -> ImagePixelType: pass
     # And now the actual definition
     def __getitem__(self, item):
         if isinstance(item, tuple):
@@ -918,23 +918,23 @@ class ImageContainer(Generic[ImageContentType]):
 
     # --- ImageContainer iteration ---
 
-    def __iter__(self:'ImageContainer[ImageContentType]') -> Iterable[Sequence[ImageContentType]]:
+    def __iter__(self:'ImageContainer[ImagePixelType]') -> Iterable[Sequence[ImagePixelType]]:
         """`for row in imagecontainer` yields successive rows from the image.
            Equivalent to `for row in imagecontainer.by_row`."""
         return iter(self.value)
 
     @property
-    def by_row(self:'ImageContainer[ImageContentType]') -> Iterable[Sequence[ImageContentType]]:
+    def by_row(self:'ImageContainer[ImagePixelType]') -> Iterable[Sequence[ImagePixelType]]:
         """`for row in imagecontainer.by_row:` yields successive rows from the image."""
         return iter(self.value)
 
     @property
-    def by_pixel(self: 'ImageContainer[ImageContentType]') -> Iterable[ImageContentType]:
+    def by_pixel(self: 'ImageContainer[ImagePixelType]') -> Iterable[ImagePixelType]:
         """`for value in imagecontainer.by_pixel:` yields successive pixel values, scanning each row, from top down."""
         return itertools.chain.from_iterable(self.value)
 
     @property
-    def enumerated(self: 'ImageContainer[ImageContentType]') -> Iterable[Tuple[int, int, ImageContentType]]:
+    def enumerated(self: 'ImageContainer[ImagePixelType]') -> Iterable[Tuple[int, int, ImagePixelType]]:
         """`for x,y,value in imagecontainer.enumerated:` scans across each row, from the top down."""
         return ((x, y, value) for y, row in enumerate(self.value) for x, value in enumerate(row))
 
@@ -954,7 +954,7 @@ class ImageContainer(Generic[ImageContentType]):
         return np.array(self.value, copy=False)
         # return np.ctypeslib.as_array(wb.wb_range_finder_get_range_image(self.tag), (self.height, self.width))
 
-    def copy(self:'ImageContainer[ImageContentType]') -> 'ImageContainer[ImageContentType]':
+    def copy(self:'ImageContainer[ImagePixelType]') -> 'ImageContainer[ImagePixelType]':
         """Returns a copy of this image, with the same ImageContainer interface that the original device provided."""
         clone = ImageContainer()
         clone.width, clone.height = self.width, self.height
@@ -969,21 +969,59 @@ class ImageContainer(Generic[ImageContentType]):
         return bytes(self.value)
 
     @property
-    def list(self: 'ImageContainer[ImageContentType]') -> List[ImageContentType]:
+    def list(self: 'ImageContainer[ImagePixelType]') -> List[ImagePixelType]:
         """Returns a 1D python list of values, scanning across each row from top down.
            (Comparatively slow and typically less useful than the ImageContainer or a .copy() thereof.)"""
         return list(value for row in self.value for value in row)
 
     @property
-    def nested_list(self: 'ImageContainer[ImageContentType]') -> List[List[ImageContentType]]:
+    def nested_list(self: 'ImageContainer[ImagePixelType]') -> List[List[ImagePixelType]]:
         """Returns a python list of row-like lists of pixel values, from the top row to the bottom.
            (Comparatively slow, and not much different from the original ImageContainer or a .copy() thereof.)"""
         return [list(row) for row in self.value]
 
 
 class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageContainer[ColorBGRA] but metaclass conflict
+    """A Python Camera object is used to control a camera device node in the simulation, which generates 2D color images
+       as seen from its perspective.  Each pixel is a `ColorBGRA` object which represents each color components as an
+       int ranging 0-255, stored in a ctypes array (typically one that shares memory with the underlying simulation
+       so is valid only this timestep), but with standard Vector-like helper methods, including vector arithmetic and
+       accessing color components as .b/.blue, .g/.green, .r/.red, and .a/.alpha. Note that these are BGRA, not RGB!
+       TODO vector arithmetic between ordinary (RGB) Color and ColorRGBA currently will muddle red and blue channels!
+       `camera = robot.Camera("devicename")` creates a Camera to control the rangefinder with that name.
+       IMAGECONTAINER INTERFACE (inherited from ImageContainer superclass).
+       `camera.width` and `camera.height` are the dimensions of the Camera image, in pixels.
+       `camera[y,x]` returns the current reading of the Camera at row y, column x (fast). Note y index comes first!
+         At most one of these indices can be a slice, e.g., 0:2.
+       `camera[y]` returns row y of the the current Camera reading
+       `for row in camera` and `for row in camera.by_row` iterate through rows, from top to bottom.
+       `for pixel in camera.by_pixel` and `for x, y, pixel in camera.enumerated` go through all pixels, row after row.
+       `camera.value` returns a ctypes array containing the Camera's current reading. This array shares memory
+         with Webots, so is valid only for the duration of this timestep. If you'll want access to this information
+         later, you'll need to copy it. This array is a sequence of rows, where each row is a sequence of floats.
+         This allows indexing by rows, then columns [y][x], but does not allow comma multi-indexing like [y,x].
+       `camera.array` returns a view of the current readings as a Numpy array which shares memory with the simulation so is
+         extremely fast to create, but is valid only for the current timestep (extremely fast, but requires numpy)
+       `camera.copy()` returns a copy of the current readings that (unlike .value and .array) does not share memory with
+         Webots' internal representation of the image, so is safe to use on future timesteps. This copy retains the
+         same ImageContainer-interface as the Camera itself. (fast, recommended way to copy outside numpy)
+       `camera.buffer` copies the current value to a python bytes object (fairly fast, but very inconvenient to use)
+       `camera.list` returns the current readings all together in one long 1D python list (slow)
+       `camera.nested_list` returns a 2D list of row-like lists of Camera readings (slow)
+       `camera.save_image(filename, quality)` saves the current image to file; quality specifies jpeg quality (0-100)
+       CAMERA ATTRIBUTES.
+       `camera.near` is the distance to the camera's near clipping plane (i.e. the closest it can see).
+       `camera.fov` reads or adjusts the camera's field of view in radians, between `.min_fov` and `.max_fov`
+       `camera.focal_distance` reads or adjusts focal distance between `.min_focal_distance` and `.max_focal_distance`;
+       this would be the distance to focused-upon objects, but requires the camera have a focus node in the simulation.
+       `camera.focal_length` is the length between the camera's sensor and the optical center of its lens.
+       `camera.exposure` and `camera.exposure = x` read and adjust the camera's exposure, in joules per square meter.
+       `camera.min_range` and `camera.max_range` are bounds on the range of detectable objects.
+       CAMERA RECOGNITION OBJECTS.
+       TODO These are not implemented yet!
+       """
 
-    # --- Camera attributes ---
+    #--- Camera image dimensions (accessed by ImageContainer superclass) ---
 
     @property
     def width(self) -> int:
@@ -1002,6 +1040,8 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
     def getHeight(self) -> int:
         """DEPRECATED: Camera.getHeight() is deprecated. Please use camera.height or camera.size.y."""
         return wb.wb_camera_get_height(self.tag)
+
+    # --- Other Camera attributes ---
 
     wb.wb_camera_get_fov.restype = c_double
     @property
@@ -1089,7 +1129,7 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
     wb.wb_camera_get_focal_distance.restype = c_double
     @property
     def focal_distance(self) -> float:
-        """Returns or adjusts the current focal_distance of this Camera."""
+        """Returns or adjusts the focal distance of this Camera."""
         return wb.wb_camera_get_focal_distance(self.tag)
     @focal_distance.setter
     def focal_distance(self, focalDistance: float):
@@ -1370,17 +1410,17 @@ class Lidar(ImageContainer[float], Device, Sensor):
     """A Python Lidar object is used to control a lidar device node in the simulation, which itself
        detects distances to nearby objects at an array of similar angles, and may rotate.
        `lidar = robot.Lidar("devicename")` creates a Lidar to control the rangefinder with that name.
+       IMAGECONTAINER INTERFACE (mostly inherited from ImageContainer superclass).
        `lidar.width` and `lidar.height` are the dimensions of the Lidar image, in pixels.
        `lidar[y,x]` returns the current reading of the Lidar at row y, column x (fast). Note y index comes first!
          At most one of these indices can be a slice, e.g., 0:2.
        `lidar[y]` returns row y of the the current Lidar reading
-       `for x, y, value in lidar` iterates through points in the image, scanning across each row, from the top down
-       TODO: THIS ITERATION BEHAVIOR IS TENTATIVE AND MAY CHANGE IN FUTURE VERSIONS!
+       `for row in lidar` and `for row in lidar.by_row` iterate through rows, from top to bottom.
+       `for pixel in lidar.by_pixel` and `for x, y, pixel in lidar.enumerated` go through all pixels, row after row.
        `lidar.value` returns a ctypes array containing the Lidar's current reading. This array shares memory
          with Webots, so is valid only for the duration of this timestep. If you'll want access to this information
          later, you'll need to copy it. This array is a sequence of rows, where each row is a sequence of floats.
          This allows indexing by rows, then columns [y][x], but does not allow comma multi-indexing like [y,x].
-         Iterating this .value iterates through rows.
        `lidar.array` returns a view of the current readings as a Numpy array which shares memory with the simulation so is
          extremely fast to create, but is valid only for the current timestep (extremely fast, but requires numpy)
        `lidar.copy()` returns a copy of the current readings that (unlike .value and .array) does not share memory with
@@ -1389,10 +1429,16 @@ class Lidar(ImageContainer[float], Device, Sensor):
        `lidar.buffer` copies the current value to a python bytes object (fairly fast, but very inconvenient to use)
        `lidar.list` returns the current readings all together in one long 1D python list (slow)
        `lidar.nested_list` returns a 2D list of row-like lists of Lidar readings (slow)
-       `lidar.min_range`, `lidar.max_range` and `lidar.fov` provide information about the meaning of lidar readings.
-       `lidar.save_image(filename, quality)` saves the current image to file, with quality specify jpeg quality (0-100)"""
+       `lidar.save_image(filename, quality)` saves the current image to file, with quality specify jpeg quality (0-100)
+       LIDAR ATTRIBUTES.
+       `lidar.frequency` reads or adjusts the rotation frequency between `.min_frequency` and `.max_frequency`
+       `lidar.min_range` and `lidar.max_range` are bounds on the range of detectable objects.
+       `lidar.fov` and `lidar.vertical_fov` are the horizontal and vertical fields of view, in radians.
+       LIDAR POINTCLOUDS.
+       TODO These are not implemented yet!
+       """
 
-    # ---Lidar characteristics---
+    #--- Lidar image dimensions (accessed by ImageContainer superclass) ---
 
     @property
     def width(self) -> int:
@@ -1411,6 +1457,8 @@ class Lidar(ImageContainer[float], Device, Sensor):
     def getNumberOfLayers(self) -> int:
         """DEPRECATED: Lidar.getNumberOfLayers() is deprecated. Please use lidar.number_of_layers instead."""
         return wb.wb_lidar_get_number_of_layers(self.tag)
+
+    # ---Other Lidar characteristics---
 
     wb.wb_lidar_get_min_frequency.restype = c_double
     @property
@@ -1579,11 +1627,13 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
     """A Python RangeFinder object is used to control a rangefinder device node in the simulation, which itself
        detects distances to nearby objects at an array of similar angles.
        `rf = robot.RangeFinder("devicename")` creates a RangeFinder to control the rangefinder with that name.
+       IMAGECONTAINER INTERFACE (inherited from ImageContainer superclass).
        `rf.width` and `rf.height` are the dimensions of the RangeFinder image, in pixels.
+       `rf[y]` returns row y of the the current RangeFinder reading
        `rf[y,x]` returns the current reading of the RangeFinder at row y, column x (fast). Note y index comes first!
          At most one of these indices can be a slice, e.g., 0:2.
-       `rf[y]` returns row y of the the current RangeFinder reading
-       `for x, y, value in rf` iterates through points in the range finder, scanning across each row, from the top down
+       `for row in rf` and `for row in rf.by_row` iterate through rows, from top to bottom.
+       `for pixel in rf.by_pixel` and `for x, y, pixel in rf.enumerated` go through all pixels, row after row.
        `rf.value` returns a ctypes array containing the RangeFinder's current reading. This array shares memory
          with Webots, so is valid only for the duration of this timestep. If you'll want access to this information
          later, you'll need to copy it. This array is a sequence of rows, where each row is a sequence of floats.
@@ -1597,10 +1647,12 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
        `rf.buffer` copies the current value to a python bytes object (fairly fast, but very inconvenient to use)
        `rf.list` returns the current readings all together in one long 1D python list (slow)
        `rf.nested_list` returns a 2D list of row-like lists of RangeFinder readings (slow)
-       `rf.min_range`, `rf.max_range` and `rf.fov` provide information about the meaning of rangefinder readings.
-       `rf.save_image(filename, quality)` saves the current image to file, with quality specify jpeg quality (0-100)"""
+       `rf.save_image(filename, quality)` saves the current image to file, with quality specify jpeg quality (0-100)
+       RANGEFINDER CHARACTERISTICS.
+       `rf.fov` and `rf.vertical_fov` return the horizontal and vertical fields of view of the rangefinder, in radians.
+       `rf.min_range` and `rf.max_range` return bounds on the range of detectable objects."""
 
-    #--- RangeFinder dimensions ---
+    #--- RangeFinder image dimensions (accessed by ImageContainer superclass) ---
 
     @property
     def width(self) -> int:
@@ -1620,15 +1672,22 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
         """DEPRECATED: RangeFinder.getHeight() is deprecated. Please use rangefinder.height instead."""
         return wb.wb_range_finder_get_height(self.tag)
 
+    #--- RangeFinder characteristics ---
+
     wb.wb_range_finder_get_fov.restype = c_double
     @property
     def fov(self) -> float:
-        """Returns the current field of view of this RangeFinder, in radians."""
+        """Returns the horizontal field of view of this RangeFinder, in radians."""
         return wb.wb_range_finder_get_fov(self.tag)
     @use_docstring_as_deprecation_warning
     def getFov(self) -> float:
         """DEPRECATED: RangeFinder.getFov() is deprecated. Please use rangefinder.fov instead."""
         return wb.wb_range_finder_get_fov(self.tag)
+
+    @property
+    def vertical_fov(self) -> float:
+        """Computes the vertical field of view of this RangeFinder, in radians, using the formula in Webots docs."""
+        return 2 * math.atan(math.tan(self.fov * 0.5) * (self.height / self.width))
 
     wb.wb_range_finder_get_min_range.restype = c_double
     @property
