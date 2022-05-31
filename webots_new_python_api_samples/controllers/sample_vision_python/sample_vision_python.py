@@ -57,7 +57,7 @@ FILTER_MAX_HSV = dict( RED = (5, 255, 255),
                        PURPLE = (152, 255, 255),
                        WHITE = (255, 80, 255) )
 
-# RGB color for each filter's onscreen label when the filter is ON (a greyed out OFF color will be computed below)
+# RGB color for each filter's onscreen label
 FILTER_LABEL_RGB = dict( RED = (0.7, 0, 0),
                         GREEN = (0, 0.4, 0),
                         BLUE = (0, 0, 1),
@@ -102,12 +102,8 @@ def process_image(camera: robot.Camera, active_filters):
 
     return np.bitwise_and(input, combined_filter3D, output)  # black out pixels that match no color; store in output
 
-# === Create Labels to show info in the Simulation Window ===
+# === Create onscreen Labels to show which filters are active ===
 
-instructions_label = world.Label(f"Toggle filters: {' '.join(KEY_TO_FILTER)} N A    Drive with arrows",
-                                 pos=(0.05,0.9), size=0.12, color=0)
-
-# Create an onscreen label for each filter, spaced evenly across the bottom of the display
 label_x_values = np.linspace(0.05, 0.95, num = len(FILTERS), endpoint=False)
 filter_labels = {f: world.Label(FILTER_TO_KEY[f], pos=(x, 0.75), color=FILTER_LABEL_RGB[f], size=0.3, shadow=True)
                  for f, x in zip(FILTERS, label_x_values)}
@@ -116,12 +112,16 @@ def update_filter_labels(active_filters):
     """Prints a message to console about active filters, and changes on-screen label colors to show which are active."""
     print('Active filters: {' + ', '.join(active_filters) + '}')
 
-    # Fade out the labels for inactive filters, while making the others fully opaque
+    # Labels for active filters are fully opaque; inactive are 60% transparent. (Their shadows make them appear grayer.)
     for f in FILTERS:
         filter_labels[f].update(transparency=0.0 if f in active_filters else 0.6)
 
 
-# === Print instructions into console ===
+# === Print instructions to screen and console ===
+
+instructions_label = world.Label(f"Toggle filters: {' '.join(KEY_TO_FILTER)} N A;  Drive with arrows",
+                                 pos=(0.05,0.9), size=0.12, color=0,
+                                 shadow=True, shadow_color=(0.5,0.5,0.5,0.5), shadow_offset=(-0.002, -0.002))
 
 print("Vision module demo, using openCV and NumPy.")
 print("Press arrow keys to move.")
@@ -131,7 +131,7 @@ print("Press A to apply all filters.")
 print("Press N to remove all filters.")
 print("When one or more filters is applied, only the matching colors are included in the image.")
 print("The processed image consists of the entire image if no filter is used.")
-update_filter_labels(active_filters)  # make label show initial filters
+update_filter_labels(active_filters)  # make labels show initial filter status
 
 # === Main loop ===
 
@@ -157,7 +157,7 @@ while robot.step():
         speed_left -= 4.2
         speed_right -= 4.2
     if keyboard.LEFT in keyboard:
-        speed_left -= 1.2           # Turning any more sharply causes the e-puck to lose traction!
+        speed_left -= 1.2           # Turning any more sharply causes the e-puck to lose traction and rock wildly!
         speed_right += 1.2
     if keyboard.RIGHT in keyboard:
         speed_left += 1.2
@@ -168,5 +168,5 @@ while robot.step():
     # --- Process and display camera image ---
     filtered_image = process_image(camera, active_filters)
     display.Image(filtered_image).paste_once(xy=(0, 0), blend=False)
-    # Using .paste_once automatically deletes the imported image after pasting, so it won't clutter Webots memory
+    # Using .paste_once automatically deletes the imported image after pasting, so it won't clutter Webots' memory
 # end of main loop
