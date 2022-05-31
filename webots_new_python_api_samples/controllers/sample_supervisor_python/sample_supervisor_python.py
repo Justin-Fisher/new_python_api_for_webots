@@ -39,7 +39,7 @@ print(f"WorldInfo.gravity = {world.WorldInfo.gravity}")
 # Use a label to display information in the 3D view
 label = world.Label("Going to move the location of the PointLight\n" +
                     "in 2 seconds (simulation time)...",
-                    pos=(0, 0), size = 0.1, color=(0, 1, 0), transparency=0.1, font="Georgia")
+                    pos=(0, 0), size = 0.1, color=(0, 1, 0), transparency=0.1, font="Georgia", shadow=True)
 print(label)      # Also print this same message to console
 world.step(2000)  # Wait for 2000 milliseconds = 2 seconds
 world.PointLight.location = (0.5, 0.5, 0.3)
@@ -56,7 +56,7 @@ label.update("Going to move the Sphere in 2 seconds (simulation time)...")
 print(label)  # also print this same message to console
 world.step(2000)
 label.delete()
-timer = world.TimerLabel(duration = 60, pos=(0.4,0), size=0.2) # a timer that will count down 60 seconds
+timer = world.TimerLabel(duration = 60, pos=(0.4,0), size=0.2, shadow=True) # a timer that will count down 60 seconds
 sphere_node = world.children[-1]
 translation = sphere_node.translation
 #  Main loop will continue so long as Webots' world.step() says to, and our 5-second timer has not run down

@@ -158,7 +158,7 @@ class Label(_SurrogateValue, metaclass = MetaLabel):
     def update(self, value: _Any = _omitted, pos: Iterable2f = _omitted, size:float = _omitted,
                color:_Union[Iterable3f, Iterable4f, int] = _omitted, transparency: float = _omitted,
                font: str = _omitted, is_visible: bool = _omitted,
-               shadow_offset = _omitted, shadow_color = _omitted, ) -> _Any:
+               shadow_offset = _omitted, shadow_color = _omitted ) -> _Any:
         """Updates this label's .attributes as specified in given (keyword) arguments, and updates the onscreen
            display of this label. Returns this label itself (which is a surrogate for its value)."""
         if value is not _omitted: self.value = value
@@ -230,7 +230,8 @@ class TimerLabel(Label):
                  pos: Iterable2f = (0.0, 0.0), size=0.1,
                  color: _Union[Iterable3f, Iterable4f, int] = 0xFF1111, transparency=0.0,
                  font: str = "default", is_visible=True, paused = False,
-                 value: float = _omitted, index: int = None):
+                 value: float = _omitted, index: int = None,
+                 shadow = None, shadow_index:int = None, shadow_offset=(0.002, 0.002), shadow_color=(0,0,0,0.8)):
 
         # We'll just do timer-specific initialization, then pass the buck up to the superclass
         self.duration = duration
@@ -239,12 +240,15 @@ class TimerLabel(Label):
         self.start_time = core_api.time
         super().__init__(value=value, pos=pos, size=size, color=color,
                          transparency=transparency, font=font,
-                         is_visible=is_visible, index=index)  # let the superclass do most of the work
+                         is_visible=is_visible, index=index,
+                         shadow=shadow, shadow_index=shadow_index,
+                         shadow_offset=shadow_offset, shadow_color=shadow_color)  # let the superclass do most of the work
 
     def update(self, duration: float = _omitted, pos: Iterable2f = _omitted, size: float = _omitted,
                color: _Union[Iterable3f, Iterable4f, int] = _omitted, transparency: float = _omitted,
                font: str = _omitted, is_visible: bool = _omitted,
-               paused: bool = _omitted, value: float = _omitted):
+               paused: bool = _omitted, value: float = _omitted,
+               shadow_offset = _omitted, shadow_color = _omitted):
         """This accepts many standard label arguments in case you want to update any of them, but it also works
            fine with no parameters, in which case it will just update this timer to fit the current time.
            Returns this TimerLabel itself, which is a surrogate for its value."""
@@ -263,7 +267,7 @@ class TimerLabel(Label):
             if self.duration: value = max(0.0, self.duration - value)
         # Any remaining arguments will be handled by superclass
         super().update(value=value, pos=pos, size=size, color=color, transparency=transparency,
-                       font=font, is_visible=is_visible)
+                       font=font, is_visible=is_visible, shadow_offset=shadow_offset, shadow_color=shadow_color)
         return self
 
     def reset(self, **kwargs):
