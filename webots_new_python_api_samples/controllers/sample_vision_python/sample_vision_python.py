@@ -28,6 +28,8 @@ import numpy as np  # numpy must be installed
 import robot
 import world
 
+from vectors import Pair # helps us to control a pair of devices (in this case motors) at once
+
 # === Initialize Devices ===
 
 camera = robot.Camera("camera")  # this automatically enables the camera too
@@ -36,8 +38,8 @@ display = robot.Display()  # When there is only one instance of a device class, 
 
 keyboard = robot.keyboard  # give keyboard local name for easy reference; this also automatically enables it
 
-left_motor, right_motor = list(robot.Motor)
-left_motor.target_position = right_motor.target_position = None  # we'll control these by velocity, below
+motors = Pair(robot.Motor)     # gathers all (i.e. both) robot Motors and puts them in a Pair that can control both
+motors.target_position = None  # the Pair distributes this command to each motor; we'll control their velocities below
 
 # === Define Filters ===
 
@@ -148,22 +150,14 @@ while robot.step():
             update_filter_labels(active_filters)
 
     # --- Arrow keys drive the robot ---
-    speed_left = speed_right = 0
+    planned_speeds = Pair(0, 0)  # Planned speeds for left and right motor
     # keyboard itself contains all keys that are currently down; we'll keep driving as long as arrow keys are down
-    if keyboard.UP in keyboard:
-        speed_left += 4.2
-        speed_right += 4.2
-    if keyboard.DOWN in keyboard:
-        speed_left -= 4.2
-        speed_right -= 4.2
-    if keyboard.LEFT in keyboard:
-        speed_left -= 1.2           # Turning any more sharply causes the e-puck to lose traction and rock wildly!
-        speed_right += 1.2
-    if keyboard.RIGHT in keyboard:
-        speed_left += 1.2
-        speed_right -= 1.2
-    left_motor.velocity = speed_left
-    right_motor.velocity = speed_right
+    if keyboard.UP in keyboard: planned_speeds += 4.2     # adds 4.2 to both .left and .right of planned_speeds
+    if keyboard.DOWN in keyboard: planned_speeds -= 4.2
+    if keyboard.LEFT in keyboard: planned_speeds += (-1.2, +1.2)   # slow down .left side, speed up .right side
+    if keyboard.RIGHT in keyboard: planned_speeds += (+1.2, -1.2)  # vice versa
+    # Note: Turning any more sharply causes the e-puck to lose traction and rock wildly!
+    motors.velocity = planned_speeds  # assign the two planned speeds to the two motors
 
     # --- Process and display camera image ---
     filtered_image = process_image(camera, active_filters)

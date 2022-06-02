@@ -23,8 +23,8 @@ __author__ = 'Justin C. Fisher'
 import collections
 import itertools
 import operator
-from math import sin, cos, acos, sqrt, atan2
-from typing import Sequence, Iterable, TypeVar, Generic
+from math import sin, cos, acos, sqrt, atan2, trunc, floor, ceil
+from typing import Sequence, Iterable, TypeVar, Generic, overload, Container
 import sys
 from ctypes import c_double, c_void_p, POINTER, c_ubyte
 from typing import List, Tuple, Set, Union, Optional
@@ -156,7 +156,6 @@ class GenericVector(Generic[ContentType]):
         return self[0]
     @x.setter
     def x(self:'GenericVector[ContentType]', new_value: ContentType): self[0] = new_value
-    l = left = x  # now vector.l and vector.left return vector[0] too
 
     @property
     def y(self:'GenericVector[ContentType]') -> ContentType:
@@ -164,7 +163,6 @@ class GenericVector(Generic[ContentType]):
         return self[1]
     @y.setter
     def y(self:'GenericVector[ContentType]', new_value: ContentType): self[1] = new_value
-    r = right = y  # now vector.r and vector.right return vector[1] too
 
     @property
     def z(self:'GenericVector[ContentType]') -> ContentType:
@@ -655,7 +653,6 @@ class VectorValue(GenericVector, SurrogateValue):
         return self.value[0]
     @x.setter
     def x(self:'VectorValue[ContentType]', new_value: ContentType): self.value[0] = new_value
-    l = left = x  # now vector.l and vector.left return vector[0] too
 
     @property
     def y(self:'VectorValue[ContentType]') -> ContentType:
@@ -663,7 +660,6 @@ class VectorValue(GenericVector, SurrogateValue):
         return self.value[1]
     @y.setter
     def y(self:'VectorValue[ContentType]', new_value: ContentType): self.value[1] = new_value
-    r = right = y  # now vector.r and vector.right return vector[1] too
 
     @property
     def z(self:'VectorValue[ContentType]') -> ContentType:
@@ -836,3 +832,370 @@ class VectorValue(GenericVector, SurrogateValue):
     @property
     def transpose(self) -> 'Vector':
         return output_type[type(self)]( [Vector( new_row ) for new_row in zip( *self.value ) ] )
+
+# === Dist objects (list-like objects that distribute most operations over their members) ---
+
+
+
+MemberType = TypeVar('MemberType')        # Used to indicate the type of members in a Dist
+SubmemberType = TypeVar('SubmemberType')  # Used to indicate type of submembers contained within members
+OtherType = TypeVar('OtherType')          # Used to indicate the type of other when broadcasting other to self.
+class Dist(Generic[MemberType]):
+    """A Dist is like a Python list, except most operations on a Dist are distributed over the members (which are
+       stored as ._members, and often are Python objects like devices), producing another Dist as output.
+       Other operands are "broadcast" Numpy-style, meaning that when a non-string operand matches the length of a Dist,
+       the operation will be "vectorized" element-wise, so Dist(0,1) + (0,1) == Dist(0,2), and otherwise,
+       an operand will be distributed (or "broadcast") across the whole Dist. E.g., Dist(0,1) + 3 == Dist(3,4).
+       `D = Dist(member1, member2, member3)` creates a Dist with the specified members.
+       `D = Dist(member, n=3)` creates a Dist containing 3 copies of member.
+       `D = Dist(iterable)` creates a Dist whose members are drawn from iterable.       `
+       `motors = Dist(robot.Motor)` therefore creates a Dist of all of robot's Motors, in order.
+       `D[i]` indexes or slices the Dist, as with python lists.
+       `D[i1:i2, X]` returns the Dist of m[X] for m in D[i1:i2]; i.e. peel off the first index to slice D itself,
+        and use any remaining indices to slice each of the particular members.
+       `D.velocity` returns another Dist consisting of each member's .velocity.
+       `D.velocity = v` adjusts each member's .velocity to be the corresponding member of v if v has the same
+       length as the Dist, or to be v itself otherwise (equivalent to numpy "broadcasting") .
+       `D(arg1, arg2, key1=k1,...)` returns the Dist whose members are the outputs that result from
+       calling each member function with those arguments and/or keyword arguments, broadcasting each arg as needed.
+       `D.method(...)` therefore produces a Dist of m.method(a) for each member m, again broadcasting args.
+       All arithmetic operations are vectorized, broadcasting the other operand where needed:
+       `D + 1` returns another Dist like D, with each member being 1 larger. (1 was broadcast across D)
+       `D += 1` replaces D's own members with the results of adding 1 to each. (1 was again broadcast)
+       `D + D` returns a Dist whose members will be twice those of D (vectorized arithmetic when lengths are same).
+       `foo(D)` passes the whole Dist D to function foo. Many operations that foo might do on D would automatically
+       be distributed, but some functions may not be able to handle a whole Dist at once.
+       `D.broadcast(foo)(arg1, arg2, key1 = k1, ...)` would call a distributed version of foo, broadcast to match D.
+       E.g., if D=Dist(1,4,9), then math.sqrt(D) raises a TypeError but D.broadcast(math.sqrt)(D) returns Dist(1,2,3)."""
+
+    # TODO could consider re-using the more complex output-type selection from Vectors?
+    _dist_output_type: type  # The type of output this sort of dist will produce (will be set once this class is defined)
+
+    #TODO may want to @overload the three calling signatures
+    def __init__(self, *args: Union[MemberType, Iterable[MemberType]], n:int = None):
+        if n is None:
+            if len(args) == 1 and isinstance(args[0], Iterable):  # treat single iterable args as sequence of args
+                args = args[0]
+            self.__dict__['_members'] = list(args)
+        else:
+            self.__dict__['_members'] = [args[0]]*n
+
+    def __repr__(self):
+        return repr(self._members)
+
+    # --- Dist container interface ---
+
+    def __len__(self) -> int:
+        return len(self._members)
+
+    def __iter__(self) -> Iterable[MemberType]:
+        return iter(self._members)
+
+    def __reversed__(self) -> Iterable[MemberType]:
+        return iter(reversed(self._members))
+
+    def broadcast(self, other:OtherType) -> 'Dist[OtherType]':
+        """Returns a Dist containing as many repetitions of other as self has members.
+           Useful for pre-distributing a container-like operand to ensure that it won't be vectorized in an op with
+           a like-sized Dist. E.g., if D has 2 members, then, `D.pos = (1,2)` would be vectorized, setting D[0].pos=1
+           and D[1].pos=2.  In contrast `D.pos = D.broadcast((1,2))` would instead set each members' .pos to (1,2).
+           Also useful for broadcasting a function to call it distributedly.  E.g., if D=Dist(1,4,9), math.sqrt(D)
+           raises a TypeError, but D.broadcast(math.sqrt)(D) returns Dist(1,2,3)."""
+        return self._dist_output_type(other, n=len(self))
+
+    @overload  # matched_version_of(self, scalar) returns an iterable of scalar's type
+    def matched_version_of(self, other:OtherType) -> Iterable[OtherType]: pass
+    @overload  # matched_version_of(self, matching_sequence) returns members from that sequence
+    def matched_version_of(self, other:Sequence[OtherType]) -> Iterable[OtherType]: pass
+    def matched_version_of(self, other):
+        """Returns an iterator of items based on other, either members of other (if other is a non-string with the same
+           length as self) or else just other itself repeatedly, being "broadcast" numpy-style to match self."""
+        self_n = len(self._members)
+        try: other_n = len(other)  # First we'll try to see if other is the right length to vectorize
+        except: other_n = None
+        if self_n == other_n and not(isinstance(other, str)):
+            return iter(other)   # vectorize
+        else:
+            return itertools.repeat(other, self_n)  # broadcast other by repeating as many times as self needs
+
+    @overload  # with_matched_version_of(self, scalar) returns an iterable of (member, scalar) tuples
+    def with_matched_version_of(self, other:OtherType) -> Iterable[Tuple[MemberType, OtherType]]: pass
+    @overload  # with_matched_version_of(self, matching_sequence) returns an iterable of (member, othermember) tuples
+    def with_matched_version_of(self, other:Sequence[OtherType]) -> Iterable[Tuple[MemberType,OtherType]]: pass
+    def with_matched_version_of(self, other):
+        """Returns an iterator of (m, o) pairs, where each m will be a successive member of self, and each o will be
+           based on other, and will either be a corresponding part of other (if other is a non-string with the same
+           length as self) or else will be other itself repeatedly, "broadcast" to match self.
+           E.g. D.velocity = 0 sets each member's .velocity to 0 (distributing), whereas if D has 2 members,
+           then D.velocity = (0,1) would set the first member's .velocity to 0 and the second's to 1 (vectorizing).
+           Note strings are always distributed intact, even when they happen to have the same length as the Dist,
+           so e.g., even if D happens to have 3 members, D.name = 'foo' will set each to 'foo' not one to 'f' and
+           the others to 'o'.  If you really want to distribute a string, use D.name=list('foo').
+           If you want to force an item to be broadcast intact, even if it is the right length to vectorize, you
+           can manually broadcast it to match D with D.broadcast(item)."""
+        return zip(self._members, self.matched_version_of(other))
+
+    def with_matched_args(self, args, kwargs) -> Iterable[Tuple[MemberType, Tuple, dict[str, any]]]:
+        """Returns an iterator of (m, a, k) triples, where each m will be a successive member of self,
+           each a will be a tuple drawn from args, broadcasted where necessary to match self,
+           and each k will be a dictionary of based on kwargs, again broadcast, if necessary, to match self.
+           This iterator can provide relevant args and kwargs for successive calls of a distributed function."""
+
+        # args_it will yield successive tuples of args, ready to send as *args to successive calls of some function
+        if args:
+            args_it = zip(*(self.matched_version_of(a) for a in args))
+        else:                                                     # or if no args were given, then just
+            args_it = itertools.repeat(args, len(self._members))  # repeatedly yield that empty tuple
+
+        if kwargs:
+            # kw_values_it will yield similar tuples of values to associate with the **kwargs in that call
+            kw_values_it = zip(*(self.matched_version_of(value) for value in kwargs.values()))
+            # kw_dicts_it will yield dictionaries by zipping each key together with its value from that tuple
+            kw_dicts_it = (dict(zip(kwargs, kw_values)) for kw_values in kw_values_it)
+        else:                                                          # or if no kwargs were given, then just
+            kw_dicts_it = itertools.repeat(kwargs, len(self._members)) # repeatedly yield that empty dict
+
+        # returned iterator will yeild (m, a, k) tuples: m = next member of self, a = tuple of args, k = dict of kwargs
+        return zip(self, args_it, kw_dicts_it)
+
+
+    # Dist[...] can return various types depending on what indices are given, so type-hinting requires @overload
+    @overload  # D[index] returns a single member
+    def __getitem__(self, index:int) -> MemberType: pass
+    @overload  # D[slice] returns a Dist of members in the slice
+    def __getitem__(self, item:slice) -> 'Dist[MemberType]': pass
+    @overload  # D[index1, index2] returns whatever m[index2] returns
+    def __getitem__(self:'Dist[MemberType[SubmemberType]]', item:Tuple[int, int]) -> SubmemberType: pass
+    @overload  # D[index, slice] returns whatever m[slice] returns, presumed to be another container like m
+    def __getitem__(self, item:Tuple[int, slice]) -> 'MemberType': pass
+    @overload  # D[slice, index] returns a Dist of whatever sort of submember m[index] returns
+    def __getitem__(self:'Dist[MemberType[SubmemberType]]', item:Tuple[slice, int]) -> 'Dist[SubmemberType]': pass
+    @overload  # D[slice1, slice2] returns a Dist of whatever m[slice2] returns, presumed to be another container like m
+    def __getitem__(self:'Dist[MemberType]', item:Tuple[slice, slice]) -> 'Dist[MemberType]': pass
+    def __getitem__(self, item):
+        if isinstance(item, tuple):  # D[domain, range]
+            domain = item[0]                               # peel off the first index to slice the Dist itself
+            range = item[1] if len(item)==2 else item[1:]  # remaining index / tuple-of-indices will slice each member
+            #TODO consider vectorizing each member of range rather than always broadcasting, not gonna bother for now
+            if isinstance(domain, slice):  # D[slice, range]
+                return self._dist_output_type(m[range] for m in self._members[domain] )
+            else:                          # D[index, range]
+                return self[domain][range]
+        if isinstance(item, slice):
+            return self._dist_output_type(self._members[item])
+        return self._members[item]
+
+    # D[...] = new_value should take different types depending on what indices are given, so we need @overload
+    @overload  # D[index] = new_member replaces a single member
+    def __setitem__(self, index:int, new_member:MemberType): pass
+    @overload  # D[slice] = new_members replaces a slice of members with new members
+    def __setitem__(self, slic:slice, new_members:Sequence[MemberType]): pass
+    @overload  # D[index1, index2] = new_value sets m.[index2] = new_value, where m is D[index1]
+    def __setitem__(self:'Dist[MemberType[SubmemberType]]', item:Tuple[int, int], value_to_broadcast:SubmemberType): pass
+    @overload  # D[index, slice] = new_value sets m[slice] = new_value, where m is D[index1]
+    def __setitem__(self:'Dist[MemberType[SubmemberType]]', item:Tuple[int, slice], value_to_broadcast:Sequence[SubmemberType]): pass
+    @overload  # D[slice, index] = new_value sets m.[index] = new_value, for each m in D[slice]
+    def __setitem__(self:'Dist[MemberType[SubmemberType]]', item:Tuple[slice, int], value_to_broadcast:SubmemberType): pass
+    @overload  # D[slice1, slice2] = new_value sets m[slice2] = new_value, for each m in D[slice1]
+    def __setitem__(self:'Dist[MemberType[SubmemberType]]', item:Tuple[slice, slice], value_to_broadcast:Sequence[SubmemberType]): pass
+    def __setitem__(self, item, new_value):
+        """`D[index] = new_member` replaces a member of Dist D.
+           `D[slice] = new_members` replaces a slice with new members, just as doing this with a list would.
+           `D[domain, range] = new_value` sets m[range] = new_value, broadcast to all m in D[domain]. So,
+           `D[:, range] = new_value` sets m[range] = new_value, broadcast to all members of D.
+           Note: only case in which new_value would be distributed is D[:, range] = new_value, where range consists only
+           of ints, as slicing may require a plural new_value to fill the slice, and D[index] can't vectorize."""
+        if isinstance(item, tuple):  # D[domain, range] = new_value
+            domain = item[0]                               # peel off the first index to slice the Dist itself
+            range = item[1] if len(item)==2 else item[1:]  # remaining index / tuple-of-indices will slice each member
+            if isinstance(domain, slice):  # D[slice, range] = new_value
+                # If we're assigning across all of D[:,...], and into just one slot of each member, can vectorize
+                if (domain == slice(None,None,None) and
+                        (isinstance(range, int) or isinstance(range, tuple) and all(isinstance(i,int) for i in range))):
+                    for m, v in self.with_matched_version_of(new_value):
+                        m[range] = new_value
+                for m in self._members[domain]:
+                    m[range] = new_value
+            else:  # D[index, range] = new_value
+                self._members[domain][range] = new_value
+        else:  # handles both D[index] = new_member and D[slice] = new_members
+            self._members[item] = new_value
+
+    # --- Dist distributing dunder methods across members ---
+
+    def __getattr__(self, attr):  # motors.velocity returns Dist of m.velocity for all motors
+        """D.attr returns a Dist of m.attr for each member."""
+        return self._dist_output_type(getattr(m, attr) for m in self._members)
+
+    def __setattr__(self, attr, value):  # D.attr = value sets each m.attr, broadcasting value if needed
+        for m,v in self.with_matched_version_of(value):
+            setattr(m, attr, v)
+
+    def __call__(self, *args, **kwargs):  # D.method(args) calls m.method(args) for each member, broadcasting args
+        # Note that motors.method will create a Dist of bound methods, and then *its* __call__ will call them
+        return self._dist_output_type(f(*a, **k) for f, a, k in self.with_matched_args(args, kwargs))
+
+    # TODO generalize return types and type-hints to allow subclasses like Pair to retain their (sub)class
+
+    # --- Dist vectorized arithmetic ---
+    # For type-hinting, we assume that each arithmetic op on a MemberType produces another MemberType
+
+    def __add__(self, other)->'Dist[MemberType]':   # self + other
+        return self._dist_output_type(s + o for s, o in self.with_matched_version_of(other))
+    def __radd__(self, other)->'Dist[MemberType]':  # other + self
+        return self._dist_output_type(o + s for s, o in self.with_matched_version_of(other))
+    def __iadd__(self,other) -> 'Dist[MemberType]':  # self += other
+        self.__dict__['_members'] = [s + o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __sub__(self, other)->'Dist[MemberType]':    # self - other
+        return self._dist_output_type(s - o for s, o in self.with_matched_version_of(other))
+    def __rsub__(self, other)->'Dist[MemberType]':   # other - self
+        return self._dist_output_type(o - s for s, o in self.with_matched_version_of(other))
+    def __isub__(self,other) -> 'Dist[MemberType]':  # self -= other
+        self.__dict__['_members'] = [s - o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __mul__(self, other)->'Dist[MemberType]':    # self * other
+        return self._dist_output_type(s * o for s, o in self.with_matched_version_of(other))
+    def __rmul__(self, other)->'Dist[MemberType]':   # other * self
+        return self._dist_output_type(o * s for s, o in self.with_matched_version_of(other))
+    def __imul__(self,other) -> 'Dist[MemberType]':  # self *= other
+        self.__dict__['_members'] = [s * o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __pow__(self, other)->'Dist[MemberType]':    # self ** other
+        return self._dist_output_type(s ** o for s, o in self.with_matched_version_of(other))
+    def __rpow__(self, other)->'Dist[MemberType]':   # other ** self
+        return self._dist_output_type(o ** s for s, o in self.with_matched_version_of(other))
+    def __ipow__(self,other) -> 'Dist[MemberType]':  # self **= other
+        self.__dict__['_members'] = [s ** o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __mod__(self, other)->'Dist[MemberType]':    # self % other
+        return self._dist_output_type(s % o for s, o in self.with_matched_version_of(other))
+    def __rmod__(self, other)->'Dist[MemberType]':   # other % self
+        return self._dist_output_type(o % s for s, o in self.with_matched_version_of(other))
+    def __imod__(self,other) -> 'Dist[MemberType]':  # self %= other
+        self.__dict__['_members'] = [s % o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __truediv__(self, other)->'Dist[MemberType]':    # self / other
+        return self._dist_output_type(s / o for s, o in self.with_matched_version_of(other))
+    def __rtruediv__(self, other)->'Dist[MemberType]':   # other / self
+        return self._dist_output_type(o / s for s, o in self.with_matched_version_of(other))
+    def __itruediv__(self,other) -> 'Dist[MemberType]':  # self /= other
+        self.__dict__['_members'] = [s / o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __floordiv__(self, other)->'Dist[MemberType]':   # self // other
+        return self._dist_output_type(s // o for s, o in self.with_matched_version_of(other))
+    def __rfloordiv__(self, other)->'Dist[MemberType]':  # other // self
+        return self._dist_output_type(o // s for s, o in self.with_matched_version_of(other))
+    def __ifloordiv__(self,other) -> 'Dist[MemberType]':  # self /= other
+        self.__dict__['_members'] = [s // o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __matmul__(self, other)->'Dist[MemberType]':    # self @ other
+        return self._dist_output_type(s @ o for s, o in self.with_matched_version_of(other))
+    def __rmatmul__(self, other)->'Dist[MemberType]':   # other @ self
+        return self._dist_output_type(o @ s for s, o in self.with_matched_version_of(other))
+    def __imatmul__(self,other) -> 'Dist[MemberType]':  # self @= other
+        self.__dict__['_members'] = [s @ o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    # --- Dist vectorized bitwise ops ---
+    def __and__(self, other)->'Dist[MemberType]':   # self & other
+        return self._dist_output_type(s & o for s, o in self.with_matched_version_of(other))
+    def __rand__(self, other)->'Dist[MemberType]':  # other & self
+        return self._dist_output_type(o & s for s, o in self.with_matched_version_of(other))
+    def __iand__(self,other) -> 'Dist[MemberType]':  # self &= other
+        self.__dict__['_members'] = [s & o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __or__(self, other)->'Dist[MemberType]':    # self | other
+        return self._dist_output_type(s | o for s, o in self.with_matched_version_of(other))
+    def __ror__(self, other)->'Dist[MemberType]':   # other | self
+        return self._dist_output_type(o | s for s, o in self.with_matched_version_of(other))
+    def __ior__(self,other) -> 'Dist[MemberType]':  # self |= other
+        self.__dict__['_members'] = [s | o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __xor__(self, other)->'Dist[MemberType]':    # self ^ other
+        return self._dist_output_type(s ^ o for s, o in self.with_matched_version_of(other))
+    def __rxor__(self, other)->'Dist[MemberType]':   # other ^ self
+        return self._dist_output_type(o ^ s for s, o in self.with_matched_version_of(other))
+    def __ixor__(self,other) -> 'Dist[MemberType]':  # self ^= other
+        self.__dict__['_members'] = [s ^ o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __lshift__(self, other)->'Dist[MemberType]':    # self << other
+        return self._dist_output_type(s << o for s, o in self.with_matched_version_of(other))
+    def __rlshift__(self, other)->'Dist[MemberType]':   # other << self
+        return self._dist_output_type(o << s for s, o in self.with_matched_version_of(other))
+    def __ilshift__(self,other) -> 'Dist[MemberType]':  # self <<= other
+        self.__dict__['_members'] = [s << o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    def __rshift__(self, other)->'Dist[MemberType]':    # self >> other
+        return self._dist_output_type(s >> o for s, o in self.with_matched_version_of(other))
+    def __rrshift__(self, other)->'Dist[MemberType]':   # other >> self
+        return self._dist_output_type(o >> s for s, o in self.with_matched_version_of(other))
+    def __irshift__(self,other) -> 'Dist[MemberType]':  # self >>= other
+        self.__dict__['_members'] = [s >> o for s, o in self.with_matched_version_of(other)]
+        return self
+
+    # --- Dist vectorized unary ops ---
+
+    def __neg__(self)->'Dist[MemberType]':    # -self
+        return self._dist_output_type(-s for s in self._members)
+
+    def __pos__(self)->'Dist[MemberType]':    # +self
+        return self._dist_output_type(+s for s in self._members)
+
+    def __abs__(self)->'Dist[MemberType]':    # abs(self)
+        return self._dist_output_type(abs(s) for s in self._members)
+
+    def __invert__(self)->'Dist[MemberType]':    # ~self
+        return self._dist_output_type(~s for s in self._members)
+
+    def __round__(self, n=None) ->'Dist[MemberType]':  # round(self, n)
+        return self._dist_output_type(round(s, n) for s in self._members)
+
+    def __trunc__(self) ->'Dist[MemberType]':  # math.trunc(self)
+        return self._dist_output_type(trunc(s) for s in self._members)
+
+    def __floor__(self) ->'Dist[MemberType]':  # math.floor(self)
+        return self._dist_output_type(floor(s) for s in self._members)
+
+    def __ceil__(self) ->'Dist[MemberType]':  # math.ceil(self)
+        return self._dist_output_type(ceil(s) for s in self._members)
+Dist._dist_output_type = Dist
+
+
+
+class Pair(Dist[MemberType]):
+    """A Pair is a Dist with special methods to refer to its first two elements as .l/.left and .r/.right.
+       Often useful for bilaterally symmetrical robots whose devices come in left/right pairs."""
+
+    @property
+    def left(self) -> MemberType:
+        """pair.left and pair.l return or adjust pair[0]"""
+        return self._members[0]
+    @left.setter
+    def left(self, new_member: MemberType):
+        self._members[0] = new_member
+    l = left
+
+    @property
+    def right(self) -> MemberType:
+        """pair.right and pair.r return or adjust pair[1]"""
+        return self._members[1]
+    @right.setter
+    def right(self, new_member: MemberType):
+        self._members[1] = new_member
+    r = right
+Pair._dist_output_type = Pair
+
+
+
