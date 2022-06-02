@@ -26,7 +26,7 @@ import math
 import pickle
 from functools import wraps
 from typing import List, Tuple, Set, Union, Optional, Callable, Any, Sequence, Iterable, TYPE_CHECKING, TypeVar, \
-    overload
+    overload, Type, Generic
 from ctypes import c_int, c_double, c_float, c_bool, c_char_p, c_void_p, POINTER, c_char, c_ubyte
 import re
 
@@ -66,6 +66,8 @@ def snake_case(name):
 
 
 # === General Device SuperClasses ================
+
+DeviceType = TypeVar('DeviceType', bound='Device')
 
 class DeviceList:
     """The one expected instance of this class will be robot.devices which will provide access to the
@@ -116,7 +118,7 @@ class DeviceList:
 devices = DeviceList()  # create the single DeviceList instance; this will be imported into robot to be robot.devices
 
 # TODO: consider whether this really adds significant value beyond already having Device(i) and robot.devices[i]
-class MetaDevice(type):
+class MetaDevice(type, Generic[DeviceType]):
     """This Device metaclass enables robot.Device[name_or_index] to work as an alternative device "constructor" that
        will return an existing or new python Device object of the appropriate type, or None if no match is possible.
        Device subclasses like Motor inherit this metaclass, so Motor[i] will return a Motor if Device[i] is a Motor,
@@ -127,7 +129,7 @@ class MetaDevice(type):
        the last device, and robot.devices[0:2] would return a list of two devices.
        """
 
-    def __getitem__(cls: type, index_or_name: Union[int, str]) -> Optional['Device']:
+    def __getitem__(cls: Type[DeviceType], index_or_name: Union[int, str]) -> DeviceType:
         if isinstance(index_or_name, str):  # if given a string name, try looking it up in our dict of known names
             d = Device.map_name_to_device.get(index_or_name, None)
         else:  # if given an index
@@ -137,10 +139,10 @@ class MetaDevice(type):
             d = Device(index_or_name)  # if unable to find existing match, try to create new one
         return d if isinstance(d, cls) else None
 
-    def __iter__(cls) -> Iterable['Device']:
+    def __iter__(cls: Type[DeviceType]) -> Iterable[DeviceType]:
         return (d for d in devices if isinstance(d, cls))
 
-    def __reversed__(cls) -> Iterable['Device']:
+    def __reversed__(cls: Type[DeviceType]) -> Iterable[DeviceType]:
         return (d for d in reversed(devices) if isinstance(d, cls))
 
 # === umbrella Device class ===
@@ -678,128 +680,6 @@ class LightSensor(LookUpTableSensor, SurrogateValue):
         """DEPRECATED: LightSensor.getValue() is deprecated. Please use lightsensor.value instead."""
         return wb.wb_light_sensor_get_value(self.tag)
 
-
-class Radar(Device, Sensor, SurrogateValue):
-    """This represents a Radar device, which detects nearby targets by their radar profiles.
-       By default, each new Radar device is automatically enabled with the basic timestep as its sampling period,
-       or you can use radar = Radar(name, sampling = p) to set another sampling period in milliseconds,
-       or set it to None to disable sampling for now, alterable later by setting radar.sampling = p.
-       Once enabled and a sampling period has elapsed, a Radar device can be used much like a Python list or tuple.
-       `len(radar)` indicates how many Radar.Target objects are currently visible.
-       `radar[0]` returns the 0th Target.
-       `for target in radar` iterates over the currently visible Targets.
-       `radar.value` returns a stable tuple (read-only list) of currently visible Targets. Unlike the radar device
-        itself, this will not change as time passes; useful if you want to compare what's visible at different times."""
-
-    # TODO decide whether .value type should be tuple, list or c_types ARRAY
-
-    # This is now a nested class Radar.Target, rather than standalone class RadarTarget as in earlier versions
-    # This makes this class accessible as robot.Radar.Target and is sensible since only Radar uses these Targets
-    class Target(ctypes.Structure):
-        # declare fields for c_types conversion from C-API
-        _fields_ = [('distance', c_double),
-                    ('received_power', c_double),
-                    ('speed', c_double),
-                    ('azimuth', c_double)]
-
-        # declare fields for Python linters
-        distance: float
-        recieved_power: float
-        speed: float
-        azimuth: float
-
-        def __repr__(self): return f"Radar.Target(distance={self.distance}, azimuth={self.azimuth})"
-
-    try:
-        Sequence_of_Targets = Sequence[Target]
-    except TypeError:  # Before Python 3.9 the above wouldn't work
-        Sequence_of_Targets = Sequence
-    _value: Sequence_of_Targets = tuple()  # will store a cached version of the .value
-    last_cache_time: float = -1         # will store the latest simulation time when the cached ._value was uptodate
-
-    wb.wb_radar_get_target.restype = POINTER(Target)   # will return pointer to single Radar.Target
-    wb.wb_radar_get_targets.restype = POINTER(Target)  # will return pointer to array of Radar.Targets
-    @property
-    def value(self) -> Sequence_of_Targets:
-        """A read-only sequence of Radar.Target options currently visible to this radar device.
-           Note: for most purposes, the radar device itself can be used in place of its .value.
-           E.g. you can use 'len(radar)`, `radar[0]` and `for target in radar` without needing `.value`.
-           The main advantage of using `radar.value` is to preserve a list of currently visible objects that, unlike
-           `radar` itself, won't change as time passes, useful for comparing what's visible at different times."""
-        if self.last_cache_time < core_api.time:
-            # version using singular indexed getter, as the swig controller did:
-            # self._value = tuple(wb.wb_radar_get_target(self.tag, i))
-            #                     for i in range(wb.wb_radar_get_number_of_targets(self.tag)))
-            NTargets = Radar.Target * wb.wb_radar_get_number_of_targets(self.tag)
-
-            # Pycharm linter doesn't recognize ctypes array as a Sequence, but it still works like one
-            self._value = NTargets.from_address(wb.wb_radar_get_targets(self.tag))
-            self.last_cache_time = core_api.time
-        return self._value
-
-    wb.wb_radar_get_min_range.restype = c_double
-    @property
-    def min_range(self: 'Radar') -> float:
-        """Returns the current min_range of this Radar."""
-        return wb.wb_radar_get_min_range(self.tag)
-    @use_docstring_as_deprecation_warning
-    def getMinRange(self: 'Radar') -> float:
-        """DEPRECATED: Radar.getMinRange() is deprecated. Please use radar.min_range instead."""
-        return wb.wb_radar_get_min_range(self.tag)
-
-    wb.wb_radar_get_max_range.restype = c_double
-    @property
-    def max_range(self) -> float:
-        """Returns the current max_range of this Radar."""
-        return wb.wb_radar_get_max_range(self.tag)
-    @use_docstring_as_deprecation_warning
-    def getMaxRange(self) -> float:
-        """DEPRECATED: Radar.getMaxRange() is deprecated. Please use radar.max_range instead."""
-        return wb.wb_radar_get_max_range(self.tag)
-
-    wb.wb_radar_get_horizontal_fov.restype = wb.wb_radar_get_vertical_fov.restype = c_double
-    @property
-    def FOV(self) -> Vector:
-        """Returns a 2D vector whose .x indicates the horizontal field of view, and whose .y indicates vertical."""
-        return Vector(wb.wb_radar_get_horizontal_fov(self.tag), wb.wb_radar_get_vertical_fov(self.tag))
-    @use_docstring_as_deprecation_warning
-    def getHorizontalFov(self):
-        """DEPRECATED: Radar.getHorizontalFov() is deprecated. Please use radar.FOV.x instead."""
-        return wb.wb_radar_get_horizontal_fov(self.tag)
-    @use_docstring_as_deprecation_warning
-    def getVerticalFov(self):
-        """DEPRECATED: Radar.getVerticalFov() is deprecated. Please use radar.FOV.y instead."""
-        return wb.wb_radar_get_vertical_fov(self.tag)
-
-    def __len__(self) -> int:
-        """Returns the number of visible Radar.Targets without taking the time to retrieve them."""
-        # Overwrites SurrogateValue.__len__ to enable peeking at len() without having to load the whole list
-        # TODO this could have odd results in the (rare) case where people modify the .value list.
-        #  Could make it be a tuple instead to avoid such confusions?
-        #  Could perhaps check whether the cached .value is uptodate, and if so use its length?
-        return wb.wb_radar_get_number_of_targets(self.tag)
-    @use_docstring_as_deprecation_warning
-    def getNumberOfTargets(self):
-        """DEPRECATED: radar.getNumberOfTargets() is deprecated.  Please use len(radar) instead."""
-        return wb.wb_radar_get_number_of_targets(self.tag)
-
-    # TODO figure out conversion of struct to RadarTarget
-    # TODO this would be natural to implement via __getitem__,
-    #  or perhaps faster to just cache whole list and surrogate index into it
-    # TODO Does the C-API even have a singular command?  It isn't documented!  We may be stuck loading the whole list.
-    wb.wb_radar_get_target.restype = Target
-    def getTarget(self, index) -> Target:
-        return wb.wb_radar_get_target(self.tag, index)
-
-    @use_docstring_as_deprecation_warning
-    def getTargets(self) -> Sequence_of_Targets:
-        """DEPRECATED. Radar.getTargets() is deprecated.  Please use radar.value instead, or for most purposes, you
-           can just use radar in place of its .value"""
-        return self.value
-        # I rewrote this to use a more efficient comprehension than the painful keep-appending-to-a-list version swig had
-        # return [wb.wb_radar_get_target(self.tag, i) for i in range(wb.wb_radar_get_number_of_targets(self.tag))]
-
-
 class TouchSensor(LookUpTableSensor, SurrogateValue):
 
     # BUMPER = WB_TOUCH_SENSOR_BUMPER
@@ -845,6 +725,129 @@ class TouchSensor(LookUpTableSensor, SurrogateValue):
         """DEPRECATED: TouchSensor.getValues() is deprecated.  Use touchsensor.value instead, or for most purposes,
            the touchsensor itself can be used as a surrogate for its own .value."""
         return Vec3f.from_address(wb.wb_touch_sensor_get_values(self.tag))
+
+# === Radar ===
+
+class Radar(Device, Sensor, SurrogateValue):
+    """This represents a Radar device, which detects nearby targets by their radar profiles.
+       By default, each new Radar device is automatically enabled with the basic timestep as its sampling period,
+       or you can use radar = Radar(name, sampling = p) to set another sampling period in milliseconds,
+       or set it to None to disable sampling for now, alterable later by setting radar.sampling = p.
+       Once enabled and a sampling period has elapsed, a Radar device can be used much like a Python list or tuple.
+       `len(radar)` indicates how many Radar.Target objects are currently visible.
+       `radar[0]` returns the 0th Target.
+       `for target in radar` iterates over the currently visible Targets.
+       `radar.value` returns a stable tuple (read-only list) of currently visible Targets. Unlike the radar device
+        itself, this will not change as time passes; useful if you want to compare what's visible at different times."""
+
+    class Target(ctypes.Structure):
+        # declare fields for c_types conversion from C-API
+        _fields_ = [('distance', c_double),
+                    ('received_power', c_double),
+                    ('speed', c_double),
+                    ('azimuth', c_double)]
+
+        # declare fields for Python linters
+        distance: float
+        recieved_power: float
+        speed: float
+        azimuth: float
+
+        def __repr__(self): return f"Radar.Target(distance={self.distance}, azimuth={self.azimuth})"
+
+    Target_p = POINTER(Target)
+
+    wb.wb_radar_get_target.restype = Target_p   # will return pointer to single Radar.Target
+    wb.wb_radar_get_targets.restype = Target_p  # will return pointer to array of Radar.Targets
+    @timed_cached_property
+    def value(self) -> Sequence[Target]:
+        """Returns the sequence of Radar.Target objects currently visible to this radar device,
+           stored as a ctypes array that shares memory with the Webots simulation. This means that initially
+           reading the targets is very fast, but this value is valid only for the current timestep.
+           If you'll want to refer to this value later, copy the information, e.g. with radar.copy().
+           Note: for most purposes, the radar device itself can be used as a surrogate for its own .value.
+           E.g. you can use 'len(radar)`, `radar[0]` and `for target in radar` without needing `.value`."""
+        n = wb.wb_radar_get_number_of_targets(self.tag)
+        if n == 0: return []
+        ptr = wb.wb_radar_get_targets(self.tag)
+        if not ptr: return []
+        return ctypes.cast(ptr, POINTER(Radar.Target * n))[0]
+
+    def copy(self) -> Sequence[Target]:
+        """Returns a copy of this Radar's array of current targets.  Unlike radar.value, this copy will remain
+           valid after the current timestep."""
+        return type(self.value).from_buffer_copy(self.value)
+
+    @property
+    def array(self) -> NumpyArrayType:
+        """Returns the current list of targets as a Numpy array. Rows correspond to targets.
+           Each row consists of 4 floats: the target's distance, speed, received_power, and azimuth.
+           The resulting array will share memory with Webots' internal version of the data, making creating this
+           extremely fast, but this array will cease to be valid at the end of this timestep!
+           If you will want later access to this information, you should make a copy, e.g. with Numpy's ndarray.copy().
+           (Extremely fast and provides convenience of Numpy, but requires that Numpy be available, and is valid only
+           for this timestep.)"""
+        import numpy as np
+        return np.array(self.value, copy=False)
+
+    wb.wb_radar_get_min_range.restype = c_double
+    @property
+    def min_range(self: 'Radar') -> float:
+        """Returns the current min_range of this Radar."""
+        return wb.wb_radar_get_min_range(self.tag)
+    @use_docstring_as_deprecation_warning
+    def getMinRange(self: 'Radar') -> float:
+        """DEPRECATED: Radar.getMinRange() is deprecated. Please use radar.min_range instead."""
+        return wb.wb_radar_get_min_range(self.tag)
+
+    wb.wb_radar_get_max_range.restype = c_double
+    @property
+    def max_range(self) -> float:
+        """Returns the current max_range of this Radar."""
+        return wb.wb_radar_get_max_range(self.tag)
+    @use_docstring_as_deprecation_warning
+    def getMaxRange(self) -> float:
+        """DEPRECATED: Radar.getMaxRange() is deprecated. Please use radar.max_range instead."""
+        return wb.wb_radar_get_max_range(self.tag)
+
+    wb.wb_radar_get_horizontal_fov.restype = wb.wb_radar_get_vertical_fov.restype = c_double
+    @property
+    def FOV(self) -> Vector:
+        """Returns a 2D vector whose .x indicates the horizontal field of view, and whose .y indicates vertical."""
+        return Vector(wb.wb_radar_get_horizontal_fov(self.tag), wb.wb_radar_get_vertical_fov(self.tag))
+    @use_docstring_as_deprecation_warning
+    def getHorizontalFov(self):
+        """DEPRECATED: Radar.getHorizontalFov() is deprecated. Please use radar.FOV.x instead."""
+        return wb.wb_radar_get_horizontal_fov(self.tag)
+    @use_docstring_as_deprecation_warning
+    def getVerticalFov(self):
+        """DEPRECATED: Radar.getVerticalFov() is deprecated. Please use radar.FOV.y instead."""
+        return wb.wb_radar_get_vertical_fov(self.tag)
+
+    def __len__(self) -> int:
+        """Returns the number of visible Radar.Targets without taking the time to retrieve them."""
+        # Overwrites SurrogateValue.__len__ to enable peeking at len() without having to load the whole list
+        # TODO Could perhaps check whether the cached .value is uptodate, and if so use its length?
+        return wb.wb_radar_get_number_of_targets(self.tag)
+    @use_docstring_as_deprecation_warning
+    def getNumberOfTargets(self):
+        """DEPRECATED: radar.getNumberOfTargets() is deprecated.  Please use len(radar) instead."""
+        return wb.wb_radar_get_number_of_targets(self.tag)
+
+    wb.wb_radar_get_target.restype = Target
+    @use_docstring_as_deprecation_warning
+    def getTarget(self, index:int) -> Target:
+        """DEPRECATED: Radar.getTarget(index) is deprecated. Use radar[index] instead."""
+        return wb.wb_radar_get_target(self.tag, index)
+        # TODO double-check
+
+    @use_docstring_as_deprecation_warning
+    def getTargets(self) -> List[Target]:
+        """DEPRECATED. Radar.getTargets() is deprecated. An equivalen is list(radar), though for most purposes,
+           radar will serve as a surrogate of its own value, with no need to create a separate list."""
+        return list(self.value)
+
+
 
 # === Image-Sensing Devices (Camera, Lidar, RangeFinder) ===
 
@@ -1155,25 +1158,16 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
 
     # --- Camera getting images ---
 
-    # TODO: Auto-generated camera methods, need some attention and updating
-
-    wb.wb_camera_get_image.restype = c_void_p
-    @property
-    def value(self):
-        """Returns the current image of this Camera. XXX"""
-        return wb.wb_camera_get_image(self.tag)
-
-    wb.wb_range_finder_get_range_image.restype = c_ubyte_p
+    wb.wb_camera_get_image.restype = c_ubyte_p
     @timed_cached_property
-    def value(self):
+    def value(self) -> Sequence[Sequence[ColorBGRA]]:
         """Returns the current image of this Camera as a ctypes array of rows of ColorBGRA pixels.
            Each pixel is a ColorBGRA vector that supports vector arithmetic that themselves
            contain 4 components (ordered BGRA)."""
         width, height = wb.wb_camera_get_width(self.tag), wb.wb_camera_get_height(self.tag)
-        # TODO replace c_ubyte with ColorBGRA
         c_arraytype = (ColorBGRA * width) * height
         ptr = wb.wb_camera_get_image(self.tag)
-        return ctypes.cast(ptr, ctypes.POINTER(c_arraytype))[0]
+        return ctypes.cast(ptr, POINTER(c_arraytype))[0]
 
     @use_docstring_as_deprecation_warning
     def getImage(self) -> bytes:
@@ -1540,7 +1534,7 @@ class Lidar(ImageContainer[float], Device, Sensor):
 
     wb.wb_lidar_get_range_image.restype = c_float_p
     @timed_cached_property
-    def value(self):
+    def value(self) -> Sequence[Sequence[float]]:
         """The current range image of this lidar, as a 2D ctypes array of floats, organized by row, so lidar.value[y]
            returns a row, and lidar.value[y][x] returns a pixel.  NOTE: this array shares memory with the webots
            simulation, making it fast to access, but it becomes invalid at end of timestep! If you want the information
@@ -1549,7 +1543,7 @@ class Lidar(ImageContainer[float], Device, Sensor):
         width, height = wb.wb_lidar_get_width(self.tag), wb.wb_lidar_get_height(self.tag)
         c_arraytype = (c_float*width)*height
         ptr = wb.wb_lidar_get_range_image(self.tag)
-        return ctypes.cast(ptr, ctypes.POINTER(c_arraytype))[0]
+        return ctypes.cast(ptr, POINTER(c_arraytype))[0]
 
     # Many conversions, like to lists, bytes or numpy.arrays are inherited from ImageContainer.
     # Here we mostly just need to link old deprecated versions to those.
@@ -1713,14 +1707,14 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
 
     wb.wb_range_finder_get_range_image.restype = c_float_p
     @timed_cached_property
-    def value(self):
+    def value(self) -> Sequence[Sequence[float]]:
         width, height = wb.wb_range_finder_get_width(self.tag), wb.wb_range_finder_get_height(self.tag)
         c_arraytype = (c_float*width)*height
         # array_interface = dict(size=(height, width),
         #                        type='<f2')
         # array_type = type(f"RangeArray{width}x{height}", (c_arraytype, RangeFinder.RangeImage), {})
         ptr = wb.wb_range_finder_get_range_image(self.tag)
-        return ctypes.cast(ptr, ctypes.POINTER(c_arraytype))[0]
+        return ctypes.cast(ptr, POINTER(c_arraytype))[0]
         # return c_arraytype.from_buffer(wb.wb_range_finder_get_range_image(self.tag))
 
     # Many conversions, like to lists, bytes or numpy.arrays are inherited from ImageContainer.
@@ -1828,8 +1822,8 @@ class Brake(Device):
         """DEPRECATION. Brake.getPositionSensor() is deprecated. Please use brake.position instead."""
         return self.position
 
-
-class Motor(Device):
+# TODO once I become confident that MetaDevice['Motor'] works here, should add similar for all devices
+class Motor(Device, metaclass = MetaDevice['Motor']):
     """A Python Motor object is used to control a motor node in the Webots simulation, which may either be a linear
        motor on a slider joint or a rotational motor on a hinge or ball joint.
        `motor = robot.Motor("motorname")` creates a new Motor whose name-field in the simulation is "motorname".

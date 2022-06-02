@@ -116,7 +116,7 @@ class SurrogateValue:
         return self
     def __truediv__(self, other): return self.value / other
     def __rtruediv__(self, other): return other / self.value
-    def __truediv__(self, other):
+    def __itruediv__(self, other):
         self.value /= other
         return self
     def __floordiv__(self, other): return self.value // other

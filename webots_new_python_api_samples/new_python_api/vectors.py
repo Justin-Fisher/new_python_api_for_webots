@@ -360,20 +360,35 @@ class GenericVector(Generic[ContentType]):
         return self.dot(other.unit_vector)  # dot product of self and unit vector of other
 
     @property
-    def angle(self) -> float:
-        """v.angle_xy (or v.angle for short) returns the angle of vector v's component in the x,y plane, computed using
+    def angle_xy(self) -> float:
+        """v.angle_xy returns the angle of vector v's component in the x,y plane, computed using
            Python's math.atan2, which treats the positive y-axis as angle 0, and the positive x-axis as angle pi/2.
            This also treats 0-vectors as having angle 0, somewhat unlike Vector.distance.setter which instead takes them
            to be aligned with the x-axis (but there was no way to maintain consistency with all 2D angle functions).
            Setting v.angle = a keeps the magnitude of v, but rotates v's component in the x,y plane to angle a.
            See also angle_xz and angle_yz"""
         return atan2(self[0], self[1])  # 2D angle
-    @angle.setter
+    @angle_xy.setter
     def angle(self, a):
         mag = sqrt(self[0]**2 + self[1]**2)
         self[0], self[1] = mag * sin(a), mag * cos(a)
 
-    angle_xy = angle # alternative handle, for consistency with the other pairs
+    @property
+    def angle_yx(self) -> float:
+        """v.angle_yx (or v.angle for short) returns the angle of vector v's component in the y,x plane, computed using
+           Python's math.atan2, which treats the positive x-axis as angle 0, and the positive y-axis as angle pi/2.
+           This also treats 0-vectors as having angle 0, somewhat unlike Vector.distance.setter which instead takes them
+           to be aligned with the x-axis (but there was no way to maintain consistency with all 2D angle functions).
+           Setting v.angle_yx = a keeps the magnitude of v, but rotates v's component in the y,x plane to angle a.
+           See also angle_xz and angle_yz"""
+        return atan2(self[1], self[0])  # 2D angle
+    @angle_yx.setter
+    def angle_yx(self, a):
+        mag = sqrt(self[1]**2 + self[0]**2)
+        self[1], self[0] = mag * sin(a), mag * cos(a)
+    angle = angle_yx # alternative handle, since by default Webots puts the x dimension forward, y dimension to the side
+
+    # TODO may want to add the other two permutations _zx and _zy, for completeness
 
     @property
     def angle_xz(self) -> float:
@@ -883,16 +898,7 @@ class Dist(Generic[MemberType]):
     def __repr__(self):
         return repr(self._members)
 
-    # --- Dist container interface ---
-
-    def __len__(self) -> int:
-        return len(self._members)
-
-    def __iter__(self) -> Iterable[MemberType]:
-        return iter(self._members)
-
-    def __reversed__(self) -> Iterable[MemberType]:
-        return iter(reversed(self._members))
+    # --- Dist broadcasting machinery ---
 
     def broadcast(self, other:OtherType) -> 'Dist[OtherType]':
         """Returns a Dist containing as many repetitions of other as self has members.
@@ -958,6 +964,21 @@ class Dist(Generic[MemberType]):
         # returned iterator will yeild (m, a, k) tuples: m = next member of self, a = tuple of args, k = dict of kwargs
         return zip(self, args_it, kw_dicts_it)
 
+    # --- Dist container interface ---
+
+    def __len__(self) -> int:
+        return len(self._members)
+
+    def __iter__(self) -> Iterable[MemberType]:
+        return iter(self._members)
+
+    def __reversed__(self) -> Iterable[MemberType]:
+        return iter(reversed(self._members))
+
+    # TODO This is ambiguous between asking if an item is among D._members, or asking distributedly if it is in each...
+    def __contains__(self, item):
+        return item in self._members
+
 
     # Dist[...] can return various types depending on what indices are given, so type-hinting requires @overload
     @overload  # D[index] returns a single member
@@ -1020,6 +1041,10 @@ class Dist(Generic[MemberType]):
                 self._members[domain][range] = new_value
         else:  # handles both D[index] = new_member and D[slice] = new_members
             self._members[item] = new_value
+
+    # TODO this maybe should be able to have extra indices to reach down inside and surgerize within members???
+    def __delitem__(self, item):
+        del self._members[item]
 
     # --- Dist distributing dunder methods across members ---
 
@@ -1092,7 +1117,7 @@ class Dist(Generic[MemberType]):
         return self._dist_output_type(s // o for s, o in self.with_matched_version_of(other))
     def __rfloordiv__(self, other)->'Dist[MemberType]':  # other // self
         return self._dist_output_type(o // s for s, o in self.with_matched_version_of(other))
-    def __ifloordiv__(self,other) -> 'Dist[MemberType]':  # self /= other
+    def __ifloordiv__(self,other) -> 'Dist[MemberType]':  # self //= other
         self.__dict__['_members'] = [s // o for s, o in self.with_matched_version_of(other)]
         return self
 
@@ -1170,17 +1195,40 @@ class Dist(Generic[MemberType]):
 
     def __ceil__(self) ->'Dist[MemberType]':  # math.ceil(self)
         return self._dist_output_type(ceil(s) for s in self._members)
+
+    # --- Dist comparison operations ---
+
+    def __gt__(self, other):
+        return self._dist_output_type(s > o for s, o in self.with_matched_version_of(other))
+
+    def __ge__(self, other):
+        return self._dist_output_type(s >= o for s, o in self.with_matched_version_of(other))
+
+    def __lt__(self, other):
+        return self._dist_output_type(s < o for s, o in self.with_matched_version_of(other))
+
+    def __le__(self, other):
+        return self._dist_output_type(s <= o for s, o in self.with_matched_version_of(other))
+
+    def __eq__(self, other):
+        return self._dist_output_type(s == o for s, o in self.with_matched_version_of(other))
+
+    def __ne__(self, other):
+        return self._dist_output_type(s != o for s, o in self.with_matched_version_of(other))
+
+
+
 Dist._dist_output_type = Dist
 
 
 
-class Pair(Dist[MemberType]):
+class Pair(Dist):
     """A Pair is a Dist with special methods to refer to its first two elements as .l/.left and .r/.right.
        Often useful for bilaterally symmetrical robots whose devices come in left/right pairs."""
 
     @property
     def left(self) -> MemberType:
-        """pair.left and pair.l return or adjust pair[0]"""
+        """pair.left and pair.l are both alternative ways of referring to pair[0]"""
         return self._members[0]
     @left.setter
     def left(self, new_member: MemberType):
@@ -1189,7 +1237,7 @@ class Pair(Dist[MemberType]):
 
     @property
     def right(self) -> MemberType:
-        """pair.right and pair.r return or adjust pair[1]"""
+        """pair.right and pair.r are both alternative ways of referring to pair[1]"""
         return self._members[1]
     @right.setter
     def right(self, new_member: MemberType):

@@ -816,11 +816,12 @@ class RobotModule(ModuleType):
 # to get the docstring, but declare the returned type from that property so linters will use it.
 # At runtime, the class-level property definitions always take priority over mere instance attributes like these.
 time:float = RobotModule.time
+name:str = RobotModule.name
+model:str = RobotModule.model
 keyboard: Keyboard
 joystick: Joystick
 mouse: Mouse
 battery: Battery
-
 
 # === Morph robot module to be member of RobotModule class ===
 
