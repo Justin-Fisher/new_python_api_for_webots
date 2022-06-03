@@ -35,7 +35,8 @@ from core_api import *  # imports WB constants and the ctypes library wb, and ti
 from webots_warnings import Warn, WarnOnce, use_docstring_as_deprecation_warning
 from surrogate_values import SurrogateValue, surrogate_attribute
 from descriptors import descriptor, cached_property # more options than python's @property
-from vectors import Vector, Color, VectorValue, Vec3f, Vec4f, Iterable2f, Iterable3f, Iterable4f, ColorBGRA
+from vectors import Vector, Color, VectorValue, Vec3f, Vec4f, Iterable2f, Iterable3f, Iterable4f, ColorBGRA, \
+    GenericVector
 
 # --- Additional types that can't simply be imported ---
 
@@ -741,12 +742,13 @@ class Radar(Device, Sensor, SurrogateValue):
         itself, this will not change as time passes; useful if you want to compare what's visible at different times."""
 
     class Target(ctypes.Structure):
-        # declare fields for c_types conversion from C-API
+        # Declare fields for c_types conversion from C-API
         _fields_ = [('distance', c_double),
                     ('received_power', c_double),
                     ('speed', c_double),
                     ('azimuth', c_double)]
 
+        # Declare fields for Python linters
         distance: float
         recieved_power: float
         speed: float
@@ -860,11 +862,11 @@ class Radar(Device, Sensor, SurrogateValue):
 # === Image-Sensing Devices (Camera, Lidar, RangeFinder) ===
 
 from typing import TypeVar, Generic, Type
-ImagePixelType = TypeVar('ImagePixelType', ColorBGRA, float)
+ImagePixelType = TypeVar('ImagePixelType', ColorBGRA, float, 'Lidar.Point')
 
 class ImageContainer(Generic[ImagePixelType]):
-    """A container for a 2D image, stored as its .value, which consists of rows of items of ImagePixelType,
-       which will either be `ColorBGRA` for Cameras, or `float` for RangeFinders/Lidars.
+    """A container for a 2D image, stored as its .value, which consists of rows of items of ImagePixelType, which will
+       be `ColorBGRA` for Cameras, `float` for RangeFinder/Lidar images, and Lidar.Point for lidar point-clouds.
        These devices themselves are ImageContainers, as are copies of them (and copies of copies), produced by .copy()
        The ImageContainer class provides a standard container interface, and conversion to other datatypes.
        ACCESSING PIXELS.
@@ -1548,7 +1550,7 @@ class Lidar(ImageContainer[float], Device, Sensor):
            simulation, making it fast to access, but it becomes invalid at end of timestep! If you want the information
            for longer, you'll need to copy it, e.g. with lidar.copy(). For most purposes, you can use lidar as a
            surrogate for lidar.value, and this offers more flexible indexing, e.g. lidar[y,x]."""
-        width, height = wb.wb_lidar_get_width(self.tag), wb.wb_lidar_get_height(self.tag)
+        width, height = wb.wb_lidar_get_horizontal_resolution(self.tag), wb.wb_lidar_get_number_of_layers(self.tag)
         c_arraytype = (c_float*width)*height
         ptr = wb.wb_lidar_get_range_image(self.tag)
         return ctypes.cast(ptr, POINTER(c_arraytype))[0]
@@ -1573,27 +1575,94 @@ class Lidar(ImageContainer[float], Device, Sensor):
 
     # --- Lidar Point Cloud ---
 
-    class LidarPoint(object):
+    class Point(ctypes.Structure, VectorValue):
+        """A Lidar.Point is a member of a Lidar.PointCloud, and indicates the coordinates of a surface-point
+           detected by Lidar, in the frame of reference of the Lidar's axes.
+           Each Lidar.Point shares memory with the Webots simulation, which makes PointClouds relatively quick to
+           access, but makes PointClouds and their Points be valid only for the current timestep.  If you will
+           want to refer back to their values later, you'll need to make a copy, e.g. with PointCloud.copy().
+           Lidar points are vector-like, so you can do standard vector arithmetic with them,
+           or use helper functions like point.angle and point.distance.  These vectorized ops consider only
+           the .x, .y and .z of the Point and not its .layer_id and .time."""
+        # Declare fields for c_types conversion from C-API
+        _fields_ = [('x', c_float),
+                    ('y', c_float),
+                    ('z', c_float),
+                    ('layer_id', c_int),
+                    ('time', c_float)]
 
-        def __repr__(self): return "LidarPoint"  # TODO make more informative!
+        # Declare attributes for Python linters
+        x: float
+        y: float
+        z: float
+        layer_id: int
+        time: float
 
-        # TODO vectorize somehow
-        # x = property(wb.wb_lidar_point_x_getXXX, wb.wb_lidar_point_x_setXXX)
-        # y = property(wb.wb_lidar_point_y_getXXX, wb.wb_lidar_point_y_setXXX)
-        # z = property(wb.wb_lidar_point_z_getXXX, wb.wb_lidar_point_z_setXXX)
-        # layer_id = property(wb.wb_lidar_point_layer_id_getXXX, wb.wb_lidar_point_layer_id_setXXX)
-        # time = property(wb.wb_lidar_point_time_getXXX, wb.wb_lidar_point_time_setXXX)
+        @property
+        def value(self) -> Vector:
+            """Lidar.Point.value returns the xyz vector information about this Point.
+               For most purposes, you can use each Point as a surrogate for this value."""
+            return Vector(self[0:3])
 
-        def __init__(self):
-            pass
-            # had called LidarPoint_swiginit(self, controller.new_LidarPoint())
+        def __repr__(self): return f"Lidar.Point({self.x}, {self.y}, {self.z})"
 
-    # TODO treat PointCloud as pseudo sensor?
+    class PointCloud(ImageContainer['Lidar.Point']):
+        def __init__(self, lidar: 'Lidar'):
+            self.tag = lidar.tag
+            self.sampling = True  # automatically enable with basic timestep as sampling period
+
+        wb.wb_lidar_is_point_cloud_enabled.restype = c_bool
+        @property
+        def sampling(self)->bool:
+            """Setting robot.mouse.xyz.is_enabled = True will enable mouse.xyz to return the location of the cursor
+               in 3D space.  Setting it to False will disable this, which will save processing time.  The current
+               setting may be read as robot.mouse.xyz.is_enabled """
+            return wb.wb_lidar_is_point_cloud_enabled()
+        @sampling.setter
+        def sampling(self=None, new_value:bool = True):
+            if new_value:
+                wb.wb_lidar_enable_point_cloud(self.tag)
+            else:
+                wb.wb_lidar_disable_point_cloud(self.tag)
+
+        wb.wb_camera_get_image.restype = c_ubyte_p
+        @timed_cached_property
+        def value(self) -> Sequence[Sequence[ColorBGRA]]:
+            """Returns the current image of this Camera as a ctypes array of rows of ColorBGRA pixels.
+               Each pixel is a ColorBGRA vector that supports vector arithmetic that themselves
+               contain 4 components (ordered BGRA)."""
+            width, height = wb.wb_lidar_get_horizontal_resolution(self.tag), wb.wb_lidar_get_number_of_layers(self.tag)
+            c_arraytype = height * (width * Lidar.Point)
+            ptr = wb.wb_lidar_get_point_cloud(self.tag)
+            return ctypes.cast(ptr, POINTER(c_arraytype))[0]
+
+    @cached_property
+    def cloud(self) -> PointCloud:
+        """Provides access to this Lidar's PointCloud, which provides access to detailed information about
+           the surface points this Lidar has detected.
+           Whenever you first refer to lidar.cloud, or if you set lidar.cloud.sampling = True, the PointCloud will
+           automatically be enabled with the simulation's basic timestep as its sampling period, or you can set
+           another sampling period in milliseconds. Setting lidar.cloud.sampling = None disables readings,
+           which will speed up the simulation again.  When enabled, lidar.cloud works as another ImageContainer,
+           similar to lidar itself, except that where the lidar's basic image's pizels were simply floats indicating
+           the distance to the detected surface in that direction, the cloud's pixels are instead Lidar.Point
+           objects that provide the x,y,z vector to the detected point from the frame of reference of the Lidar,
+           accessible as point.value or the point itself serves as a vectorlike surrogate for this value, as well as
+           point.layer_id and point.time for each pixel."""
+        return Lidar.PointCloud(self)  # now future references will retrieve this directly
+
+    @use_docstring_as_deprecation_warning
     def enablePointCloud(self):
+        """DEPRECATED. Lidar.enablePointCloud() is deprecated. Use lidar.cloud.sampling = True,
+           or simply referring to lidar.cloud will automatically enable it."""
         return wb.wb_lidar_enable_point_cloud(self.tag)
+    @use_docstring_as_deprecation_warning
     def disablePointCloud(self):
+        """DEPRECATED. Lidar.disablePointCloud() is deprecated. Use lidar.cloud.sampling = None."""
         return wb.wb_lidar_disable_point_cloud(self.tag)
+    @use_docstring_as_deprecation_warning
     def isPointCloudEnabled(self):
+        """DEPRECATED. Lidar.isPointCloudEnabled() is deprecated. Use lidar.cloud.sampling."""
         return wb.wb_lidar_is_point_cloud_enabled(self.tag)
 
     @property

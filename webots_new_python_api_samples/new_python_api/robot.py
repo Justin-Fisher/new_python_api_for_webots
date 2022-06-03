@@ -460,24 +460,24 @@ class Mouse( RobotPseudoSensor ):
     @surrogate_attribute
     def v     (self) -> float: "The fraction of the way down the simulation window the mouse cursor is."
     @surrogate_attribute
-    def x     (self) -> float: "Global x coordinate of the mouse cursor (if you've set mouse.pos3D.is_enabled = True)"
+    def x     (self) -> float: "Global x coordinate of the mouse cursor (if you've set mouse.xyz.sampling = True)"
     @surrogate_attribute
-    def y     (self) -> float: "Global y coordinate of the mouse cursor (if you've set mouse.pos3D.is_enabled = True)"
+    def y     (self) -> float: "Global y coordinate of the mouse cursor (if you've set mouse.xyz.sampling = True)"
     @surrogate_attribute
-    def z     (self) -> float: "Global z coordinate of the mouse cursor (if you've set mouse.pos3D.is_enabled = True)"
+    def z     (self) -> float: "Global z coordinate of the mouse cursor (if you've set mouse.xyz.sampling = True)"
 
     class XYZ_Vector( Vector ):
-        """A Vector representing the mouse position in 3D space, with an .is_enabled property that can be used to
+        """A Vector representing the mouse position in 3D space, with an .sampling property that can be used to
            read/adjust whether such mouse.xyz readings will be available or just NotaNumber(NaN). Requires first setting
-           robot.mouse.xyz.is_enabled = True since computing this position is somewhat computationally expensive."""
+           robot.mouse.xyz.sampling = True since computing this position is somewhat computationally expensive."""
 
         # TODO Think about whether this should be a class_property instead of a property
         wb.wb_mouse_is_3d_position_enabled.restype = c_bool
         @property
         def sampling(self)->bool:
-            """Setting robot.mouse.xyz.is_enabled = True will enable mouse.xyz to return the location of the cursor
+            """Setting robot.mouse.xyz.sampling = True will enable mouse.xyz to return the location of the cursor
                in 3D space.  Setting it to False will disable this, which will save processing time.  The current
-               setting may be read as robot.mouse.xyz.is_enabled """
+               setting may be read as robot.mouse.xyz.sampling """
             return wb.wb_mouse_is_3d_position_enabled()
         @sampling.setter
         def sampling(self=None, new_value:bool = True):
@@ -494,20 +494,20 @@ class Mouse( RobotPseudoSensor ):
     @property
     def xyz(self) -> XYZ_Vector:
         """A Vector representing the mouse position in 3D space.  Requires first setting
-           robot.mouse.pos3D.sampling = True since computing this position is somewhat computationally expensive."""
+           robot.mouse.xyz.sampling = True since computing this position is somewhat computationally expensive."""
         return Mouse.XYZ_Vector(self.value.x, self.value.y, self.value.z)
 
     @use_docstring_as_deprecation_warning
     def enable3dPosition(self):
-        """DEPRECATED: Mouse.enable3dPosition() is deprecated.  Please use mouse.pos3D.sampling = True"""
+        """DEPRECATED: Mouse.enable3dPosition() is deprecated.  Please use mouse.xyz.sampling = True"""
         return wb.wb_mouse_enable_3d_position()
     @use_docstring_as_deprecation_warning
     def disable3dPosition(self):
-        """DEPRECATED: Mouse.disable3dPosition() is deprecated.  Please use mouse.pos3D.sampling = None"""
+        """DEPRECATED: Mouse.disable3dPosition() is deprecated.  Please use mouse.xyz.sampling = None"""
         return wb.wb_mouse_disable_3d_position()
     @use_docstring_as_deprecation_warning
     def is3dPositionEnabled(self)->bool:
-        """DEPRECATED: Mouse.is3dPositionEnabled() is deprecated.  Please use mouse.pos3D.sampling"""
+        """DEPRECATED: Mouse.is3dPositionEnabled() is deprecated.  Please use mouse.xyz.sampling"""
         return wb.wb_mouse_is_3d_position_enabled()
 
 
