@@ -1230,7 +1230,7 @@ class Pair(Dist):
     def left(self) -> MemberType:
         """pair.left and pair.l are both alternative ways of referring to pair[0]"""
         return self._members[0]
-    @left.setter
+    @left.setter  # defined for linters; this won't actually get called due to __setattr__ intercepting it
     def left(self, new_member: MemberType):
         self._members[0] = new_member
     l = left
@@ -1239,10 +1239,20 @@ class Pair(Dist):
     def right(self) -> MemberType:
         """pair.right and pair.r are both alternative ways of referring to pair[1]"""
         return self._members[1]
-    @right.setter
+    @right.setter  # defined for linters; this won't actually get called due to __setattr__ intercepting it
     def right(self, new_member: MemberType):
         self._members[1] = new_member
     r = right
+
+    def __setattr__(self, attr, value):  # D.attr = value sets each m.attr, broadcasting value if needed
+        # We need to intercept superclass trying to distribute this down to member.left, etc...
+        if attr == 'left' or attr == 'l':
+            self[0] = value
+        elif attr == 'right' or attr == 'r':
+            self[1] = value
+        else:
+            super().__setattr__(attr, value)
+
 Pair._dist_output_type = Pair
 
 
