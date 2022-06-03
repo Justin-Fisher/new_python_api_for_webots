@@ -65,7 +65,7 @@ while robot.step(TIME_STEP):
             # Start with a vector pointing straight ahead (along x=forward axis) the distance of the detected target
             pos = robot.Vector(target.distance, 0, 0)
             # Setting a Vector's .angle twists it to that new angle, keeping its magnitude the same
-            pos.angle = -target.azimuth  # negative since this radar is mounted to give -azimuth in the +y direction
+            pos.angle = target.angle  # target.angle is -target.azimuth since azimuth is flipped from most Webots angles
             pos.z += 0.2  # Hover spotlight up above the target (+z is up)
             spotlight.translation = pos  # store this pos as the new translation for this marker in the simulation
             # The following command would spam the console with radar sightings, redundant with the moving spotlights

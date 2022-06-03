@@ -747,11 +747,19 @@ class Radar(Device, Sensor, SurrogateValue):
                     ('speed', c_double),
                     ('azimuth', c_double)]
 
-        # declare fields for Python linters
         distance: float
         recieved_power: float
         speed: float
         azimuth: float
+
+        @property
+        def angle(self) -> float:
+            """Returns or adjusts the target's perceived angle, in radians, to the left (+y direction) of the radar's
+               +x axis.  This is -target.azimuth, since azimuth is  left/right inverted from other Webots angles."""
+            return -self.azimuth
+        @angle.setter
+        def angle(self, new_angle):
+            self.azimuth = -new_angle
 
         def __repr__(self): return f"Radar.Target(distance={self.distance}, azimuth={self.azimuth})"
 
