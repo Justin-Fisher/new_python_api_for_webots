@@ -26,7 +26,7 @@ import operator
 from math import sin, cos, acos, sqrt, atan2, trunc, floor, ceil
 from typing import Sequence, Iterable, TypeVar, Generic, overload, Container
 import sys
-from ctypes import c_double, c_void_p, POINTER, c_ubyte
+from ctypes import c_double, c_void_p, POINTER, c_ubyte, c_int
 from typing import List, Tuple, Set, Union, Optional
 
 if sys.version_info < (3, 6, 0):
@@ -500,7 +500,6 @@ class GenericColor(GenericVector):
         return red_or_combined or red or r, green or g, blue or b
 
 
-
 #--------------------------------------------------------------------------------------------------
 # Concrete Vector subclasses
 #--------------------------------------------------------------------------------------------------
@@ -508,7 +507,7 @@ class GenericColor(GenericVector):
 # Each Vector subclass combines the vector functionality of GenericVector with some sort of container-like interface
 # by which vector components can be accessed
 
-class Vector( GenericVector, list ):
+class Vector(GenericVector, list):
     """This is the most common form of vector, a list with properties like x,y,z,a and r,g,b to access early members,
        and overloaded vector-arithmetic operators that work sensibly with both vector and scalar operands.
        Perhaps unobvious is @ which is vector dot-product.  This also provides properties to access common derivative
@@ -555,7 +554,7 @@ class Color(Vector, GenericColor):
         else:
             list.__init__(self, (red_or_combined or red or r, green or g, blue or b))
 
-class CTypesVector( GenericVector[ContentType] ):
+class CTypesVector(GenericVector[ContentType]):
     _length: int # will be set by subclasses, designates expected length of this vector; __init__ will enforce
     def __init__(self, *args:Union[float,Iterable[float]]):
         if len(args)==1: args = args[0]
@@ -569,9 +568,16 @@ class CTypesVector( GenericVector[ContentType] ):
 # and aren't automatically detected as such by abc's
 # We register these as Sequence so that isinstance(v, Sequence) and isinstance(v, Iterable) will work, used above
 
+@Sequence.register
+class Vec2i(CTypesVector, c_int*2):
+    """This is a 2-component Vector whose content is contained in a ctypes array of 2 ctypes.c_int integers.
+       In addition to Vector functionality, this also inherits ctypes array functionality, including
+       a .fromaddress class method that can be used to receive one of these through a ctypes .dll."""
+    _length = 2
+Vec2i_p = POINTER(Vec2i)
 
 @Sequence.register
-class Vec2f( CTypesVector, c_double*2 ):
+class Vec2f(CTypesVector, c_double*2):
     """This is a 2-component Vector whose content is contained in a ctypes array of 2 ctypes.c_double floats.
        In addition to Vector functionality, this also inherits ctypes array functionality, including
        a .fromaddress class method that can be used to receive one of these through a ctypes .dll."""
@@ -579,12 +585,18 @@ class Vec2f( CTypesVector, c_double*2 ):
 Vec2f_p = POINTER(Vec2f)
 
 @Sequence.register
-class Vec3f( CTypesVector, c_double*3 ):
+class Vec3f(CTypesVector, c_double*3):
     """This is a 3-component Vector whose content is contained in a ctypes array of 3 ctypes.c_double floats.
        In addition to Vector functionality, this also inherits ctypes array functionality, including
        a .fromaddress class method that can be used to receive one of these through a ctypes .dll."""
     _length = 3
 Vec3f_p = POINTER(Vec3f)
+
+class Color3f(Vec3f, GenericColor):
+    """This is a 3-component Vector whose content is contained in a ctypes array of 3 ctypes.c_double floats.
+       In addition to Vector functionality, this also inherits ctypes array functionality, and GenericColor
+       functionality, liek the ability to refer to components as .r/.red."""
+Color3f_p = POINTER(Color3f)
 
 @Sequence.register
 class Vec4f( CTypesVector, c_double*4 ):

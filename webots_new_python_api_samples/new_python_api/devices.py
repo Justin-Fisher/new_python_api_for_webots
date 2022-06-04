@@ -36,7 +36,7 @@ from webots_warnings import Warn, WarnOnce, use_docstring_as_deprecation_warning
 from surrogate_values import SurrogateValue, surrogate_attribute
 from descriptors import descriptor, cached_property # more options than python's @property
 from vectors import Vector, Color, VectorValue, Vec3f, Vec4f, Iterable2f, Iterable3f, Iterable4f, ColorBGRA, \
-    GenericVector
+    GenericVector, Vec2i, Color3f, Color3f_p, Rotation
 
 # --- Additional types that can't simply be imported ---
 
@@ -1191,224 +1191,250 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
            for most purposes the camera itself will work like this nested list, e.g. in camera[y][x][c]."""
         return self.nested_list
 
-    # TODO these seem to require that the width be explicitly given, probably better to make another interface
     @staticmethod
     def imageGetRed(*args):
-        return wb.wb_camera_image_get_redXXX(*args)
+        raise NotImplementedError("Camera.imageGetColor() functions have been removed. "
+                                  "Use camera[y,x].red, .green, or .blue")
+    imageGetGreen = imageGetBlue = imageGetGray = imageGetGrey = imageGetRed
 
-    @staticmethod
-    def imageGetGreen(*args):
-        return wb.wb_camera_image_get_greenXXX(*args)
-
-    @staticmethod
-    def imageGetBlue(*args):
-        return wb.wb_camera_image_get_blueXXX(*args)
-
-    @staticmethod
-    def imageGetGray(*args):
-        return wb.wb_camera_image_get_grayXXX(*args)
-
-    @staticmethod
-    def imageGetGrey(*args):
-        return wb.wb_camera_image_get_greyXXX(*args)
-
-
-    def saveImage(self, filename:str, quality: int = 90) -> int:
+    def save_image(self, filename: str, quality: int = 90):
         """Saves the camera's current image to the given filename.  If the filname ends '.jpg' or '.jpeg' then
            `quality` will be used to determine jpeg quality, 0-100 (default 90).
            Returns a truth-like value (-1) if the save fails, and a false-like value (0) if it succeeds."""
         return wb.wb_camera_save_image(self.tag, filename.encode(), quality)
+    @use_docstring_as_deprecation_warning
+    def saveImage(self, filename:str, quality: int = 90) -> int:
+        """DEPRECATED: Webots is moving to conventional Python naming, so Camera.saveImage is now .save_image.
+           Also its quality parameter is now optional (defaults to 90)."""
+        return wb.wb_camera_save_image(self.tag, filename.encode(), quality)
 
     # --- camera recognition ---
 
-    # TODO  NOT YET IMPLEMENTED
+    class Recognition(Sensor, SurrogateValue, api_name = 'camera_recognition'): # auto_link_wb_methods=False):
+        # # This pseudo-sensor has idiosyncratically named methods, so auto_link_wb_methods is False and we define here:
+        # _enable = wb.wb_camera_recognition_enable
+        # _disable = wb.wb_camera_recognition_disable
+        # _get_sampling_period = wb.wb_camera_recognition_get_sampling_period
 
-    class RecognitionObject:
-        def __init__(self):
-            pass
+        class Object(ctypes.Structure):
+            """A Camera.Recognition.Object is used to convey information about an object recognized by a camera.
+               TODO keep this?: Each Recognition.Object shares memory with the Webots simulation, which makes them
+                quick to access, but makes them valid only for the current timestep.  If you will
+                want to refer back to their values later, you'll need to make a copy
+               TODO provide copying mechanism?"""
+            # Declare fields for c_types conversion from C-API
+            _fields_ = [('id', c_int),
+                        ('position', Vec3f),
+                        ('orientation', Rotation),
+                        ('size', Vec2i),
+                        ('position_on_image', Vec2i),
+                        ('size_on_image', Vec2i),
+                        ('number_of_colors', c_int),
+                        ('colors', Color3f_p),
+                        ('model', c_char_p)]
 
-        # id = property(wb.wb_camera_recognition_object_id_getXXX, wb.wb_camera_recognition_object_id_setXXX)
-        # position = property(wb.wb_camera_recognition_object_position_getXXX,
-        #                     wb.wb_camera_recognition_object_position_setXXX)
-        # orientation = property(wb.wb_camera_recognition_object_orientation_getXXX,
-        #                        wb.wb_camera_recognition_object_orientation_setXXX)
-        # size = property(wb.wb_camera_recognition_object_size_getXXX, wb.wb_camera_recognition_object_size_setXXX)
-        # position_on_image = property(wb.wb_camera_recognition_object_position_on_image_getXXX,
-        #                              wb.wb_camera_recognition_object_position_on_image_setXXX)
-        # size_on_image = property(wb.wb_camera_recognition_object_size_on_image_getXXX,
-        #                          wb.wb_camera_recognition_object_size_on_image_setXXX)
-        # number_of_colors = property(wb.wb_camera_recognition_object_number_of_colors_getXXX,
-        #                             wb.wb_camera_recognition_object_number_of_colors_setXXX)
-        # colors = property(wb.wb_camera_recognition_object_colors_getXXX, wb.wb_camera_recognition_object_colors_setXXX)
-        # model = property(wb.wb_camera_recognition_object_model_getXXX, wb.wb_camera_recognition_object_model_setXXX)
+            # Re-declare attributes for Python linters
+            id: int
+            position: Vec3f
+            orientation: Rotation
+            size: Vec2i
+            position_on_image: Vec2i
+            size_on_image: Vec2i
+            number_of_colors: int
+            colors: Sequence[Color3f]
+            model: str
 
-        def get_position(self):
-            return wb.wb_camera_recognition_object_get_positionXXX(self)
-
-        def get_orientation(self):
-            return wb.wb_camera_recognition_object_get_orientationXXX(self)
-
-        def get_size(self):
-            return wb.wb_camera_recognition_object_get_sizeXXX(self)
-
-        def get_position_on_image(self):
-            return wb.wb_camera_recognition_object_get_position_on_imageXXX(self)
-
-        def get_size_on_image(self):
-            return wb.wb_camera_recognition_object_get_size_on_imageXXX(self)
-
-        def get_colors(self):
-            return wb.wb_camera_recognition_object_get_colorsXXX(self)
-
-        def get_id(self):
-            return wb.wb_camera_recognition_object_get_idXXX(self)
-
-        def get_number_of_colors(self):
-            return wb.wb_camera_recognition_object_get_number_of_colorsXXX(self)
-
-        def get_model(self):
-            return wb.wb_camera_recognition_object_get_modelXXX(self)
+            # TODO need to decide whether to mediate these by properties or let ctypes sort of do it
+            #  Could have recognition.value be the underlying array, sharing memory with Webots
+            #  Could mediate access via a container interface. Accessing recognition[i] spawns a Python object
+            #  that copies the relevant data from source.
+            #  Probably would want timed_caching of these wrappers
+            #  This could be left as an implementation detail, subject to change
+            #  I think the risk may not be all that bad, so long as they don't keep whole Objects.  The main worry is
+            #  probably the vectorlike ones, that might end up trying to perpetually share memory.  Most are vectors tho
 
 
+            # id = property(wb.wb_camera_recognition_object_id_getXXX, wb.wb_camera_recognition_object_id_setXXX)
+            # position = property(wb.wb_camera_recognition_object_position_getXXX,
+            #                     wb.wb_camera_recognition_object_position_setXXX)
+            # orientation = property(wb.wb_camera_recognition_object_orientation_getXXX,
+            #                        wb.wb_camera_recognition_object_orientation_setXXX)
+            # size = property(wb.wb_camera_recognition_object_size_getXXX, wb.wb_camera_recognition_object_size_setXXX)
+            # position_on_image = property(wb.wb_camera_recognition_object_position_on_image_getXXX,
+            #                              wb.wb_camera_recognition_object_position_on_image_setXXX)
+            # size_on_image = property(wb.wb_camera_recognition_object_size_on_image_getXXX,
+            #                          wb.wb_camera_recognition_object_size_on_image_setXXX)
+            # number_of_colors = property(wb.wb_camera_recognition_object_number_of_colors_getXXX,
+            #                             wb.wb_camera_recognition_object_number_of_colors_setXXX)
+            # colors = property(wb.wb_camera_recognition_object_colors_getXXX, wb.wb_camera_recognition_object_colors_setXXX)
+            # model = property(wb.wb_camera_recognition_object_model_getXXX, wb.wb_camera_recognition_object_model_setXXX)
+
+            def __repr__(self): return f"Camera.Recognition.Object(#{self.id})"
+
+            @use_docstring_as_deprecation_warning
+            def get_position(self):
+                """DEPRECATED. Recognition.Object.get_position is deprecated. Use object.position instead."""
+                return self.position
+
+            @use_docstring_as_deprecation_warning
+            def get_orientation(self):
+                """DEPRECATED. Recognition.Object.get_orientation is deprecated. Use object.orientation instead."""
+                return self.orientation
+
+            @use_docstring_as_deprecation_warning
+            def get_size(self):
+                """DEPRECATED. Recognition.Object.get_size is deprecated. Use object.size instead."""
+                return self.size
+
+            @use_docstring_as_deprecation_warning
+            def get_position_on_image(self):
+                """DEPRECATED. Recognition.Object.get_position_on_image is deprecated. Use object.position_on_image instead."""
+                return self.position_on_image
+
+            @use_docstring_as_deprecation_warning
+            def get_size_on_image(self):
+                """DEPRECATED. Recognition.Object.get_size_on_image is deprecated. Use object.size_on_image instead."""
+                return self.size_on_image
+
+            @use_docstring_as_deprecation_warning
+            def get_colors(self):
+                """DEPRECATED. Recognition.Object.get_colors is deprecated. Use object.colors instead."""
+                return self.colors
+
+            @use_docstring_as_deprecation_warning
+            def get_id(self):
+                """DEPRECATED. Recognition.Object.get_id is deprecated. Use object.id instead."""
+                return self.id
+
+            @use_docstring_as_deprecation_warning
+            def get_number_of_colors(self):
+                """DEPRECATED. Recognition.Object.get_number_of_colors is deprecated. Use object.number_of_colors instead."""
+                return self.number_of_colors
+
+            @use_docstring_as_deprecation_warning
+            def get_model(self):
+                """DEPRECATED. Recognition.Object.get_model is deprecated. Use object.model instead."""
+                return self.model
+
+        # --- Camera.Recognition initialization ---
+
+        def __init__(self, camera: 'Camera'):
+            self.camera = camera
+            self.tag = camera.tag
+            wb.wb_camera_enable_recognition(self.tag)  # automatically enable (share's parent camera's sampling period)
+
+        def __repr__(self):
+            return f"{self.camera}.recognition"
+
+        def __len__(self) -> int:
+            # TODO or should this be len(self.value)??? Or just left to surrogate value to handle?
+            return wb.wb_camera_recognition_get_number_of_objects(self.tag)
+
+        # --- Camera.Recognition value ---
+
+        wb.wb_camera_recognition_get_objects.restype = POINTER(Object)
+        @timed_cached_property
+        def value(self) -> Sequence[Object]:
+            """Returns the current value of this Camera.Recognition system as a ctypes array of Camera.Recognition.Objects.
+               Each Object has... XXX"""
+            num = wb.wb_camera_recognition_get_number_of_objects(self.tag)
+            if num == 0: return []
+            ptr = wb.wb_camera_recognition_get_objects(self.tag)
+            if not ptr: return []
+            c_arraytype = num * Camera.Recognition.Object
+            # TODO consider copying because there's a significant risk of some component being stored elsewhere
+            return ctypes.cast(ptr, POINTER(c_arraytype))[0]
+
+    wb.wb_camera_has_recognition.restype = c_bool
+    @cached_property
+    def recognition(self) -> Recognition:
+        """Returns a Camera.Recognition object that provides access to this camera's Recognition system, if this
+           is available, or returns None if it isn't.
+           Whenever you first refer to camera.recognition, or if you set camera.recognition.sampling = True,
+           the Recognition system will automatically be enabled to produce new readings every basic timestep.
+           Or you can set another period, in milliseconds, or setting this to None disables readings, which will
+           speed up the simulation again.
+           When enabled... XXX"""
+        if not wb.wb_camera_has_recognition(self.tag): return None
+        return Camera.Recognition(self)  # now future references will retrieve this directly; automatically enables itself
+
+    # --- Deprecated camera.recognition methods ---
+
+    @use_docstring_as_deprecation_warning
     def hasRecognition(self) -> bool:
+        """DEPRECATED: Camera.hasRecognition is deprecated.
+           camera.recognition will be None if the camera lacks recognition."""
         return wb.wb_camera_has_recognition(self.tag)
 
-    # TODO change recognition to an enable-able pseudo-device
-
-
-
+    @use_docstring_as_deprecation_warning
     def recognitionEnable(self, samplingPeriod):
+        """DEPRECATED: Camera.recognitionEnable() is deprecated. Please set camera.recognition.sampling = t,
+           where t is the sampling period in milliseconds, or can be True to use the basic timestep."""
         return wb.wb_camera_recognition_enable(self.tag, samplingPeriod)
 
+    @use_docstring_as_deprecation_warning
     def recognitionDisable(self):
+        """DEPRECATED: Camera.recognitionDisable() is deprecated. Please set camera.recognition.sampling = None."""
         return wb.wb_camera_recognition_disable(self.tag)
 
+    @use_docstring_as_deprecation_warning
     def getRecognitionSamplingPeriod(self):
-        return wb.wb_camera_get_recognition_sampling_periodXXX(self.tag)
+        """DEPRECATED: Camera.getRecognitionSamplingPeriod() is deprecated. Please use camera.recognition.sampling."""
+        return wb.wb_camera_recognition_get_sampling_period(self.tag)
 
-    # wb.wb_camera_get_recognition_sampling_periodXXX.restype = XXX
-    # @property
-    # def recognition_sampling_period(self):
-    #     """Returns the current recognition_sampling_period of this Camera. XXX"""
-    #     return wb.wb_camera_get_recognition_sampling_periodXXX(self.tag)
-    # @use_docstring_as_deprecation_warning
-    # def getRecognitionSamplingPeriod(self):
-    #     """DEPRECATED: Camera.getRecognitionSamplingPeriod() is deprecated. Please use camera.recognition_sampling_period instead."""
-    #     return wb.wb_camera_get_recognition_sampling_periodXXX(self.tag)
+    @use_docstring_as_deprecation_warning
+    def getRecognitionNumberOfObjects(self) -> int:
+        """DEPRECATED: Camera.getRecognitionNumberOfObjects() is deprecated. Please use len(camera.recognition) instead."""
+        return wb.wb_camera_recognition_get_number_of_objects(self.tag)
+
+    @use_docstring_as_deprecation_warning
+    def getRecognitionObjects(self):
+        """DEPRECATED: Camera.getRecognitionObjects() is deprecated. list(camera.recognition) is equivalent,
+           though camera.recognition itself would serve most of the same purposes."""
+        return list(self.recognition)
+
+    def getRecognitionObject(self, index:int):
+        """DEPRECATED: Camera.getRecognitionObject(i) is deprecated. Please use camera.recognition[i] instead."""
+        return self.recognition[index]
+
+    # --- Deprecated camera.recognition.segmentation methods ---
+
+    # TODO add real versions of these up into Recognition, I guess
+
+    def hasRecognitionSegmentation(self):
+        return wb.wb_camera_recognition_has_segmentation(self.tag)
+
+    def enableRecognitionSegmentation(self):
+        return wb.wb_camera_recognition_enable_segmentation(self.tag)
+
+    def disableRecognitionSegmentation(self):
+        return wb.wb_camera_recognition_disable_segmentation(self.tag)
+
+    def isRecognitionSegmentationEnabled(self):
+        return wb.wb_camera_recognition_is_segmentation_enabled(self.tag)
+
     # # -----------------------------------------------------
-    # wb.wb_camera_get_recognition_number_of_objectsXXX.restype = XXX
-    # @property
-    # def recognition_number_of_objects(self) -> int:
-    #     """Returns the current recognition_number_of_objects of this Camera. XXX"""
-    #     return wb.wb_camera_get_recognition_number_of_objectsXXX(self.tag)
-    # @use_docstring_as_deprecation_warning
-    # def getRecognitionNumberOfObjects(self) -> int:
-    #     """DEPRECATED: Camera.getRecognitionNumberOfObjects() is deprecated. Please use camera.recognition_number_of_objects instead."""
-    #     return wb.wb_camera_get_recognition_number_of_objectsXXX(self.tag)
-    # # -----------------------------------------------------
-    # wb.wb_camera_get_recognition_objectsXXX.restype = XXX
-    # @property
-    # def recognition_objects(self):
-    #     """Returns the current recognition_objects of this Camera. XXX"""
-    #     return wb.wb_camera_get_recognition_objectsXXX(self.tag)
-    # @use_docstring_as_deprecation_warning
-    # def getRecognitionObjects(self):
-    #     """DEPRECATED: Camera.getRecognitionObjects() is deprecated. Please use camera.recognition_objects instead."""
-    #     return wb.wb_camera_get_recognition_objectsXXX(self.tag)
-    # # -----------------------------------------------------
-    # wb.wb_camera_get_recognition_segmentation_imageXXX.restype = XXX
+    # wb.wb_camera_recognition_get_segmentation_imageXXX.restype = XXX
     # @property
     # def recognition_segmentation_image(self):
     #     """Returns the current recognition_segmentation_image of this Camera. XXX"""
-    #     return wb.wb_camera_get_recognition_segmentation_imageXXX(self.tag)
+    #     return wb.wb_camera_recognition_get_segmentation_imageXXX(self.tag)
     # @use_docstring_as_deprecation_warning
     # def getRecognitionSegmentationImage(self):
     #     """DEPRECATED: Camera.getRecognitionSegmentationImage() is deprecated. Please use camera.recognition_segmentation_image instead."""
-    #     return wb.wb_camera_get_recognition_segmentation_imageXXX(self.tag)
-
-    # wb.wb_camera_get_image_arrayXXX.restype = XXX
-    # @property
-    # def image_array(self):
-    #     """Returns the current image_array of this Camera. XXX"""
-    #     return wb.wb_camera_get_image_arrayXXX(self.tag)
-    # @use_docstring_as_deprecation_warning
-    # def getImageArray(self):
-    #     """DEPRECATED: Camera.getImageArray() is deprecated. Please use camera.image_array instead."""
-    #     return wb.wb_camera_get_image_arrayXXX(self.tag)
-    # # -----------------------------------------------------
-    # wb.wb_camera_get_recognition_objectXXX.restype = XXX
-    # @property
-    # def recognition_object(self, index):
-    #     """Returns the current recognition_object of this Camera. XXX"""
-    #     return wb.wb_camera_get_recognition_objectXXX(self.tag, index)
-    # @use_docstring_as_deprecation_warning
-    # def getRecognitionObject(self, index):
-    #     """DEPRECATED: Camera.getRecognitionObject() is deprecated. Please use camera.recognition_object instead."""
-    #     return wb.wb_camera_get_recognition_objectXXX(self.tag, index)
-    # # -----------------------------------------------------
-    # @property
-    # def recognition_objects(self):
-    #     """Returns the current recognition_objects of this Camera. XXX"""
-    #     ret = []
-    #     for i in range(self.getRecognitionNumberOfObjects()):
-    #         ret.append(self.getRecognitionObject(i))
-    #     return ret
-    # @use_docstring_as_deprecation_warning
-    # def getRecognitionObjects(self):
-    #     """DEPRECATED: Camera.getRecognitionObjects() is deprecated. Please use camera.recognition_objects instead."""
-    #     ret = []
-    #     for i in range(self.getRecognitionNumberOfObjects()):
-    #         ret.append(self.getRecognitionObject(i))
-    #     return ret
-    # # -----------------------------------------------------
-    # wb.wb_camera_get_recognition_segmentation_image_arrayXXX.restype = XXX
-    # @property
-    # def recognition_segmentation_image_array(self):
-    #     """Returns the current recognition_segmentation_image_array of this Camera. XXX"""
-    #     return wb.wb_camera_get_recognition_segmentation_image_arrayXXX(self.tag)
-    # @use_docstring_as_deprecation_warning
-    # def getRecognitionSegmentationImageArray(self):
-    #     """DEPRECATED: Camera.getRecognitionSegmentationImageArray() is deprecated. Please use camera.recognition_segmentation_image_array instead."""
-    #     return wb.wb_camera_get_recognition_segmentation_image_arrayXXX(self.tag)
-
-    def getRecognitionNumberOfObjects(self) -> int:
-        return wb.wb_camera_get_recognition_number_of_objectsXXX(self.tag)
-
-    def getRecognitionObjects(self):
-        return wb.wb_camera_get_recognition_objectsXXX(self.tag)
-
-    def hasRecognitionSegmentation(self):
-        return wb.wb_camera_has_recognition_segmentationXXX(self.tag)
-
-    def enableRecognitionSegmentation(self):
-        return wb.wb_camera_enable_recognition_segmentationXXX(self.tag)
-
-    def disableRecognitionSegmentation(self):
-        return wb.wb_camera_disable_recognition_segmentationXXX(self.tag)
-
-    def isRecognitionSegmentationEnabled(self):
-        return wb.wb_camera_is_recognition_segmentation_enabledXXX(self.tag)
+    #     return wb.wb_camera_recognition_get_segmentation_imageXXX(self.tag)
 
     def getRecognitionSegmentationImage(self):
-        return wb.wb_camera_get_recognition_segmentation_imageXXX(self.tag)
+        return wb.wb_camera_recognition_get_segmentation_image(self.tag)
 
     def saveRecognitionSegmentationImage(self, filename, quality):
-        return wb.wb_camera_save_recognition_segmentation_imageXXX(self.tag, filename, quality)
+        return wb.wb_camera_recognition_save_segmentation_image(self.tag, filename, quality)
 
-    def getRecognitionObject(self, index):
-        return wb.wb_camera_get_recognition_objectXXX(self.tag, index)
-
-    def getRecognitionObjects(self):
-        ret = []
-        for i in range(self.getRecognitionNumberOfObjects()):
-            ret.append(self.getRecognitionObject(i))
-        return ret
-
+    @use_docstring_as_deprecation_warning
     def getRecognitionSegmentationImageArray(self):
-        return wb.wb_camera_get_recognition_segmentation_image_arrayXXX(self.tag)
-
-CameraRecognitionObject = Camera.RecognitionObject  # for backwards compatibility
-
+        """DEPRECATED: Camera.getRecognitionSegmentationImageArray is deprecated.
+           Use camera.recognition.segmentation.nested_list, or for most purposes camera.recogntion.segmentation itself."""
+        return self.recognition.segmentation.nested_list
 
 
 class Lidar(ImageContainer[float], Device, Sensor):
@@ -1440,8 +1466,15 @@ class Lidar(ImageContainer[float], Device, Sensor):
        `lidar.min_range` and `lidar.max_range` are bounds on the range of detectable objects.
        `lidar.fov` and `lidar.vertical_fov` are the horizontal and vertical fields of view, in radians.
        LIDAR POINTCLOUDS.
-       TODO These are not implemented yet!
-       """
+       `lidar.cloud.sampling = True` enables point cloud readings. Setting this to None disables. Or you can read this.
+       `lidar.cloud` is another ImageContainer similar to `lidar` itself, except that where the lidar's basic image's
+       pixels were simply floats indicating the distance to the detected surface in that direction, the cloud's pixels
+       are instead Lidar.Cloud.Point objects which are vector-like surrogates for the x,y,z vector to the detected point
+       from the frame of reference of the Lidar (also available as point.value), and also allow point.layer_id
+       and point.time to return the point's layer and detection time.
+       You can do the standard ImageContainer things with lidar.cloud, like indexing (cloud[row] or cloud[row, x]),
+       iterating (for row in cloud, or for x,y,point in cloud.enumerated) or fast Numpy conversion to cloud.array,
+       though note that this returns a (height x width x 3) array of x,y,z coordinates."""
 
     #--- Lidar image dimensions (accessed by ImageContainer superclass) ---
 
