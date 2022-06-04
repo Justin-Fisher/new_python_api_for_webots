@@ -8,15 +8,17 @@ WorldInfo {
   lineScale 0.15
 }
 Viewpoint {
-  orientation 0.16484754760763526 0.7215567226103428 -0.6724441851213895 0.6550064544213271
-  position -3.7876741475594597 1.5228436968539691 2.067043916886899
+  orientation -0.06737131049831559 0.9554851730941856 0.2872441305212586 0.4814647418378482
+  position -3.507028487399793 0.22255896082111853 2.2465815174558177
   follow "MyBot"
+  followType "Pan and Tilt Shot"
 }
 TexturedBackground {
 }
 TexturedBackgroundLight {
 }
 RectangleArena {
+  rotation 0 1 0 0
   floorSize 10 10
   wallThickness 0.5
   wallHeight 1.4
@@ -156,6 +158,7 @@ DEF PINK_OBJECT3 Solid {
   boundingObject USE CYLINDER_SHAPE
 }
 DEF ROBOT Robot {
+  rotation 0 0 1 0.523599
   children [
     Transform {
       translation 0 0 0.1245
@@ -369,7 +372,7 @@ DEF ROBOT Robot {
     }
     Display {
       width 256
-      height 6
+      height 24
     }
   ]
   name "MyBot"

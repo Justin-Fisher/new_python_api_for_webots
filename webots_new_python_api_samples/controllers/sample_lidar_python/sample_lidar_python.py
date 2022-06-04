@@ -2,7 +2,12 @@
    This requires numpy, installable with 'pip install numpy'.
    This sample illustrates transferring lidar readings to numpy for fast numerical processing, converting readings
    to images to show on a Webots pop-up display, and doing crude wayfinding using the range data to avoid obstacles
-   and seek distant goals."""
+   and seek distant goals.  Tapping C toggles between displaying the simple range readings (grayscale) and
+   displaying colorful pointcloud readings.  In the colorful pointcloud, obstacles appear the default grey since their
+   x/y/z distances are close to the default zero.  The background near the left and right edges is quite blue, since
+   these represent points far ahead of the robot in the +x/+blue/+forward direction.  The reddest points are in the
+   background 3/4 of the way across, corresponding to the robot's +y/+red/+left direction.  And the greenest/yellowest
+   points are high on distant walls as those are highest-up points lidar beams hit in the +z/+green/+up direction."""
 
  # * Copyright 2022 Justin Fisher.
  # *
@@ -22,8 +27,12 @@ import numpy as np
 import robot
 from vectors import Pair  # convenient container for managing a left-right pair of similar devices, like Motors
 
-SPEED = 3                       # Maximum speed robot will move
-TIME_STEP = 64                  # How many milliseconds between each time the controller issues commands
+TIME_STEP = 64    # How many milliseconds between each time the controller issues commands
+SPEED = 3         # Maximum speed robot will move
+EMERGENCY = 0.15  # If the robot ever gets this close to anything, it will swivel hard to get away
+CAUTION = 0.5     # The robot will try to steer around anything that gets this close
+DEADEND = 2       # If all points ahead of the robot are this close, it will turn away
+
 
 # === Initialize Devices ===
 
@@ -40,29 +49,62 @@ lidar.enablePointCloud()
 
 display = robot.Display()
 
-# Create array in which we'll build the image to show on the display
+# Create arrays in which we'll build the images to show on the display
 img_BGRA = np.zeros((lidar.height, lidar.width, 4), dtype='B')
 img_BGRA[:,:,3]=255  # set alpha layer to be opaque
+cloud_xzy = np.zeros((lidar.height, lidar.width, 3), dtype='<f4')  # colorful image looks better with x=blue, z=green, y=red
+cloud_BGRA = img_BGRA.copy()
+thickness = display.height // lidar.height  # how many vertical pixels each lidar pixel will occupy on display
+thick_BGRA = np.zeros((thickness * lidar.height, lidar.width, 4), dtype='B')
+# another view of thick_BGRA, now projecting its thickness into a 4th dimension; easier to broadcast "thin" image into
+folded_BGRA = thick_BGRA.reshape(lidar.height, thickness, lidar.width, 4)
+thin_BGRA = img_BGRA.reshape(lidar.height, 1, lidar.width, 4)  # another view of img_BGRA, broadcastable onto folded_BGRA
+
+print(f"{cloud_xzy.shape=}")
+print(f"{img_BGRA.shape=}")
+print(f"{folded_BGRA.shape=}")
+print(f"{thick_BGRA.shape=}")
 
 print_readings = False
 print("Tap P to toggle printing of the closest distances on left and right, which largely drive the robot's decisions.")
+display_cloud = False
+print("Tap C to toggle whether display shows colorful point-cloud readings or drab range readings.")
 
-EMERGENCY = 0.8  # If we ever get this close to anything, we swivel hard to get away
-CAUTION = 2.5    # Anything that gets this close we'll try to steer around
-DEADEND = 10     # If all points ahead of us are this close, turn away
 
 # === Main loop ===
 while robot.step(TIME_STEP):
+    # --- Keyboard keys 'P' and 'C' toggle options ---
+    if 'P' in robot.keyboard.pressed:  # tapping P toggles printing current min readings
+        print_readings = not print_readings
+    if 'C' in robot.keyboard.pressed:  # tapping C toggles whether display shows colorful cloud or drab range
+        display_cloud = not display_cloud
+
+    # --- read the Lidar's range image into a numpy array ---
+
+    img_f = lidar.array   # floats ranging 0..8; arranged in 6 rows of 256 ringing robot, from straight ahead->clockwise
+
     # --- present Lidar readings on a Webots display ---
-    img_f = lidar.array                          # floats ranging 0..8; arranged in 6 rows of 256 ringing around robot
-    img_b = np.array(img_f*(255/8), dtype='B')   # bytes ranging 0..255
-    img_b.resize((lidar.height, lidar.width, 1)) # view as having thin 3rd dimension to allow broadcasting
-    img_BGRA[:,:,0:2] = img_b                    # copy range info onto BG channels
-    display.Image(img_BGRA).paste_once()         # paste this onto the display
+    if display_cloud:
+        input = lidar.cloud.array   # shape (height x width x 3): floats indicating x,y,z coords of each seen point
+        print(f"{input.shape=}")
+        cloud_xzy[...,0] = input[...,0]     # keep the x/forwards/0 input at the blue/0 position
+        cloud_xzy[...,1] = input[...,2]*6-2 # shift the z/up/2 input to the green/1 position, transform since world is quite flat
+        cloud_xzy[...,2] = input[...,1]     # shift the y/left/1 input to the red/2 position
+        cloud_b = np.array((cloud_xzy+8)*(255/16), dtype='B')  # convert to bytes ranging 0..255
+        img_BGRA[:,:,:3] = cloud_b                             # copy into the BGR part of img_BGRA
+    else:
+        # This uses img_f created above
+        img_b = np.array(img_f*(255/8), dtype='B')   # bytes ranging 0..255
+        img_BGRA[...,0] = img_b                      # copy range info onto Blue channel
+        img_BGRA[...,1] = img_b                      # copy range info onto Green channel as well
+        img_BGRA[...,2] = 0                          # leave red component 0, yielding cyan tone
+
+    folded_BGRA[...] = thin_BGRA                     # broadcast the thin img_BGRA into the folded version of thick_BGRA
+    display.Image(thick_BGRA).paste_once()           # paste the unfolded version of this onto the display
 
     # --- use Lidar range readings for wayfinding---
-    # Flatten the 6 layers of readings into one, for simplicity; we take the min since Lidar sees over some blocks
-    distances = np.min(img_f, axis=0)*6  # line of 256 floats ranging 0..48; starting straight ahead, scanning to right
+    # Flatten 6 layers of range readings into one, for simplicity; we take the min since Lidar sees over some blocks
+    distances = np.min(img_f, axis=0)  # line of 256 floats ranging 0..8; starting straight ahead, scanning to right
     # Check if we're about to run into anything; if so, spin hard to the right to find a clearer path
     left, right = distances[-40:], distances[:40]  # each contains distances within ~50 degrees of ahead on that side
     min_left, min_right = min(left), min(right)    # to avoid repeatedly computing
@@ -88,8 +130,5 @@ while robot.step(TIME_STEP):
             motors.velocity = SPEED, SPEED/2
         else:
             motors.velocity = SPEED/2, SPEED
-
-    if 'P' in robot.keyboard.pressed:  # tapping P toggles printing current min readings
-        print_readings = not print_readings
 
     if print_readings: print(min_left, min_right)
