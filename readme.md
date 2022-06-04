@@ -308,7 +308,11 @@ or `gps.x` or `for target in radar`.  The main reason to use
 `.value` is if you want to store a snapshot of the sensor's
 current value for later comparison, because at later timesteps, 
 the sensor itself will have forgotten its old value and become 
-a surrogate for its new value.
+a surrogate for its new value.  (For high bandwidth sensors like 
+Cameras, RangeFinders and Lidar, .value shares memory with the 
+simulation to allow for faster reading, but this means the 
+.value will be valid only for this timestep. For these, use 
+the device's .copy() method to store a lasting value, if you need it.)
 
 #### Supervisors / `world`
 
@@ -388,13 +392,8 @@ trail_plan = plan.IndexedLineSet(DEF = "TRAIL_LINE_SET",
 world.children.append(trail_plan)
 ```
 ### Known Issues.
-####. General.
-When importing `world` or `robot`, Webots often prints  
-warnings about failing to load a dynamic library like 
-"robot_windows/generic/generic.dll"  This doesn't have many adverse 
-effects, though I haven't tried to test use of robot windows yet.
 
-####. World / Supervisor.
+#### World / Supervisor.
 
 The `world` module is quite complete and well tested.  
 
@@ -415,21 +414,21 @@ what type of object you expect such references to produce.
 (Commonly used fields, like `children` and `translation` have already 
 been type-declared for you.)
 
-####. Robot module.
+#### Robot module.
 
-The `robot` module largely works, but it is not yet complete, 
-nor is it yet thoroughly tested.
+The `robot` module is near-complete and largely works, but is
+not yet thoroughly tested.
 
 Basic functionality like motors and simple sensors generally 
 work (though likely with a few bugs).
 
 High bandwidth devices are not entirely implemented. Ordinary 
-camera and rangefinder images should work.  I expect that 
-camera recognition objects, radars, and lidars won't work entirely. 
-Coming soon!
+camera and rangefinder and lidar images and pointclouds should 
+work.  I expect that camera recognition objects won't work 
+entirely. Coming soon!
 
 `robot.keyboard` is fairly well tested. I haven't had a joystick 
-to test but it is fairly similar to keyboard, so hopefully will 
+to test but it shares core functionality with keyboard, so hopefully will 
 work.  `robot.mouse` is untested and likely doesn't work entirely.
 
 If you use `robot.Device()` (or the deprecated `robot.getDevice()`)
@@ -437,7 +436,6 @@ to create devices, Pycharm's linter won't help you much for them,
 since it won't know which type of Device will be returned.
 It's generally better to use more specific constructors like 
 `robot.Motor()`.  If you detect devices dynamically, e.g. with 
-`robot.devices[0]` or 
-`distance_sensors = list(robot.DistanceSensor)` you will also 
-need an explicit type declaration to get full linting help.
+`robot.devices[0]` you will also need an explicit type declaration 
+to get full linting help.
 
