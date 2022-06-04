@@ -53,11 +53,9 @@ from dictset import DictSet
 from vectors import GenericVector, Vector, Color, Rotation, Vec2f, Vec3f, Vec4f, Vec2f_p, Vec3f_p, Vec4f_p, Iterable2f, Iterable3f, Iterable4f
 from webots_warnings import Warn, WarnOnce, use_docstring_as_deprecation_warning
 from descriptors import descriptor, cached_property
+from devices import Device
 import nodetypes
 
-# TODO need to import Device somehow from wherever it ends up! This is just a placeholder!!!
-#  from better_controller import Device
-Device = type(None)
 
 # --------LOGGING----------------------------------------------------
 

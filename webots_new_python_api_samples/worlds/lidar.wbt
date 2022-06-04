@@ -330,7 +330,6 @@ DEF ROBOT Robot {
       minRange 0.05
       maxRange 8
       type "rotating"
-      noise 0.1
       defaultFrequency 2
       rotatingHead Solid {
         children [
@@ -391,4 +390,5 @@ DEF ROBOT Robot {
     ]
   }
   controller "sample_lidar_python"
+  supervisor TRUE
 }

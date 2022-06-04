@@ -25,6 +25,7 @@
 
 import numpy as np
 import robot
+import world
 from vectors import Pair  # convenient container for managing a left-right pair of similar devices, like Motors
 
 TIME_STEP = 64    # How many milliseconds between each time the controller issues commands
@@ -36,6 +37,8 @@ DEADEND = 2       # If all points ahead of the robot are this close, it will tur
 
 # === Initialize Devices ===
 
+display = robot.Display()  # When there is only one instance of a device class, providing its name is optional
+
 keyboard = robot.keyboard  # give keyboard local name for easy reference; this also automatically enables it
 
 motors = Pair(robot.Motor)     # Now motors.left will be the robot's first motor, motors.right the second
@@ -43,9 +46,8 @@ motors.target_position = None  # set both motors not to seek any target; we'll c
 motors.velocity = 0.0          # set both motors to be stopped, for now
 
 lidar = robot.Lidar()
-lidar.cloud.sampling = True  # now we can access point-cloud readings as well as basic range images
+lidar.cloud  # referring to this automatically enables point-cloud readings
 
-display = robot.Display()
 
 # Create arrays in which we'll build the images to show on the display
 img_BGRA = np.zeros((lidar.height, lidar.width, 4), dtype='B')
@@ -68,6 +70,25 @@ print("Tap P to toggle printing of the closest distances on left and right, whic
 display_cloud = False
 print("Tap C to toggle whether display shows colorful point-cloud readings or drab range readings.")
 
+# === Plan a visual representation of the point cloud as a grid drawn in the display ===
+LINE_COLOR = (0.5,0.5,0.5)
+width, height = lidar.width, lidar.height
+plan = world.plan
+# We'll connect the grid across each row looping around, and down each column
+row_indices = [list(range(y*width, (y+1)*width))+[y*width,  -1] for y in range(height)]
+col_indices = [list(range(x, x + width*height, width)) + [-1] for x in range(width )]
+indices = sum(col_indices, []) + sum(row_indices, [])  # flatten these into a single long list
+
+lineset_plan = plan.IndexedLineSet(DEF = "CLOUD_LINESET",
+                                   material = plan.Material(diffuseColor=LINE_COLOR, emissiveColor=LINE_COLOR),
+                                   coord = plan.Coordinate(point = [(0, 0, 0)] * lidar.height * lidar.width),
+                                   coordIndex = indices
+                                  )
+world.Node(lidar).children.append(lineset_plan)
+
+# Store convenient references to relevant CLOUD_LINESET fields.
+point_field = world.Node(lidar).CLOUD_LINESET.coord.point  # list of 3D coordinates of points to display
+
 # === Main loop ===
 while robot.step(TIME_STEP):
     # --- Keyboard keys 'P' and 'C' toggle options ---
@@ -79,15 +100,14 @@ while robot.step(TIME_STEP):
     # --- read the Lidar's range image into a numpy array ---
 
     img_f = lidar.array   # floats ranging 0..8; arranged in 6 rows of 256 ringing robot, from straight ahead->clockwise
+    cloud = lidar.cloud.array  # shape (height x width x 3): floats indicating x,y,z coords of each seen point
 
     # --- present Lidar readings on a Webots display ---
     if display_cloud:
-        input = lidar.cloud.array   # shape (height x width x 3): floats indicating x,y,z coords of each seen point
-        cloud_xzy[...,0] = input[...,0]     # keep the x/forwards/0 input at the blue/0 position
-        cloud_xzy[...,1] = input[...,2]*6-2 # shift the z/up/2 input to the green/1 position, transform since world is quite flat
-        cloud_xzy[...,2] = input[...,1]     # shift the y/left/1 input to the red/2 position
-        cloud_xzy.clip(-4.9,4.9, cloud_xzy) # ensure that all are in nominal range (esp. occasional infinities!)
-        cloud_b = np.array((cloud_xzy+6)*(255/11), dtype='B')  # convert to bytes ranging 0..255
+        cloud_xzy[...,0] = cloud[...,0]     # keep the cloud's x/forwards/0 cloud at the blue/0 position
+        cloud_xzy[...,1] = cloud[...,2]*6-2 # shift the cloud's z/up/2 to the green/1 position, accentuated due to flat world
+        cloud_xzy[...,2] = cloud[...,1]     # shift the cloud's y/left/1 to the red/2 position
+        cloud_b = np.array((cloud_xzy+8)*(255/16), dtype='B')  # convert to bytes ranging 0..255
         img_BGRA[:,:,:3] = cloud_b                             # copy into the BGR part of img_BGRA
     else:
         # This uses img_f created above
@@ -98,6 +118,27 @@ while robot.step(TIME_STEP):
 
     folded_BGRA[...] = thin_BGRA                     # broadcast the thin img_BGRA into the folded version of thick_BGRA
     display.Image(thick_BGRA).paste_once()           # paste the unfolded version of this onto the display
+
+    # --- copy the cloud's point data to the visualization
+    in_cloud = cloud * 0.98  # move the visualization slightly in to avoid colliding with seen objects
+    in_cloud[in_cloud ==  np.inf] =  100  #  Move infinite values to large finite values
+    in_cloud[in_cloud == -np.inf] = -100
+    stale_time = robot.time - 0.9 / lidar.frequency  # move soon-to-be-replaced points out of sight, lest lidar see them
+    fresh_time = robot.time - 0.1 / lidar.frequency  # update locations of fresh points
+    for x in range(width):
+        if lidar.cloud[0,x].time < stale_time:
+            in_cloud[:,x,2] = -100  # hide deep underground
+            refresh_this_column = True
+        elif lidar.cloud[0,x].time > fresh_time:
+            refresh_this_column = True
+        else:
+            refresh_this_column = False
+        if refresh_this_column:
+            for y in range(height):
+                point_field[x + y*height] = in_cloud[y,x]
+
+    point_field[:] = in_cloud.reshape(-1, 3)
+
 
     # --- use Lidar range readings for wayfinding---
     # Flatten 6 layers of range readings into one, for simplicity; we take the min since Lidar sees over some blocks
@@ -123,7 +164,6 @@ while robot.step(TIME_STEP):
         motors.velocity = SPEED/4, SPEED
     # Otherwise if we're in the clear, we try to head towards the furthest point we can see roughly ahead of us
     else:
-        left, right = img_f[3,-40:], img_f[3,:40]  # look out level (lidar layer 3) for most distant point
         if max(right) > max(left):
             motors.velocity = SPEED, SPEED/2
         else:
