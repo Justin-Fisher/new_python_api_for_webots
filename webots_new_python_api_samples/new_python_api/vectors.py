@@ -369,7 +369,7 @@ class GenericVector(Generic[ContentType]):
            See also angle_xz and angle_yz"""
         return atan2(self[0], self[1])  # 2D angle
     @angle_xy.setter
-    def angle(self, a):
+    def angle_xy(self, a):
         mag = sqrt(self[0]**2 + self[1]**2)
         self[0], self[1] = mag * sin(a), mag * cos(a)
 
@@ -454,7 +454,7 @@ class GenericVector(Generic[ContentType]):
 # GenericColor abstract class
 #--------------------------------------------------------------------------------------------------
 
-class GenericColor(GenericVector):
+class GenericColor(GenericVector[float]):
     """This abstract class includes various generic methods involving colors that would work with a
        a variety of vector-like data formats, including lists, c-types arrays, and VectorValues.
     """
@@ -507,13 +507,13 @@ class GenericColor(GenericVector):
 # Each Vector subclass combines the vector functionality of GenericVector with some sort of container-like interface
 # by which vector components can be accessed
 
-class Vector(GenericVector, list):
+class Vector(GenericVector[ContentType], list[ContentType]):
     """This is the most common form of vector, a list with properties like x,y,z,a and r,g,b to access early members,
        and overloaded vector-arithmetic operators that work sensibly with both vector and scalar operands.
        Perhaps unobvious is @ which is vector dot-product.  This also provides properties to access common derivative
        properties like magnitude and unit_vector."""
 
-    def __init__(self, *args: Union[float,Iterable[float]] ):
+    def __init__(self, *args: Union[ContentType,Iterable[ContentType]]):
         """A Vector is a python list with properties like x,y,z,a and r,g,b to access early members,
            and overloaded vector-arithmetic operators that work sensibly with both vector and scalar operands.
            If given a single iterable arg, its contents will be used as the vector components. E.g. `Vector([1,2])`.
@@ -523,7 +523,7 @@ class Vector(GenericVector, list):
         else: # otherwise each given arg will become a vector component
             list.__init__( self, args )
 
-class Color(Vector, GenericColor):
+class Color(Vector[float], GenericColor):
     output_priority = 1  # vector + color will return a color rather than a (priority 0) vector
 
     def __init__(self, red_or_combined:Union[float,int,Iterable]=None,
@@ -861,8 +861,6 @@ class VectorValue(GenericVector, SurrogateValue):
         return output_type[type(self)]( [Vector( new_row ) for new_row in zip( *self.value ) ] )
 
 # === Dist objects (list-like objects that distribute most operations over their members) ---
-
-
 
 MemberType = TypeVar('MemberType')        # Used to indicate the type of members in a Dist
 SubmemberType = TypeVar('SubmemberType')  # Used to indicate type of submembers contained within members

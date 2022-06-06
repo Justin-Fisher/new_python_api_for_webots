@@ -23,6 +23,7 @@ __author__ = "Justin C. Fisher"
 import ctypes
 import functools
 import os as _os
+from typing import Callable
 
 import settings
 from WB_CONSTANTS import * # import all Webots constants at global scope

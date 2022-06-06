@@ -36,7 +36,7 @@ from webots_warnings import Warn, WarnOnce, use_docstring_as_deprecation_warning
 from surrogate_values import SurrogateValue, surrogate_attribute
 from descriptors import descriptor, cached_property # more options than python's @property
 from vectors import Vector, Color, VectorValue, Vec3f, Vec4f, Iterable2f, Iterable3f, Iterable4f, ColorBGRA, \
-    GenericVector, Vec2i, Color3f, Color3f_p, Rotation
+    GenericVector, Vec2i, Color3f, Color3f_p, Rotation, Vec2f
 
 # --- Additional types that can't simply be imported ---
 
@@ -910,8 +910,8 @@ class ImageContainer(Generic[ImagePixelType]):
        are fine, but `image[0:2, 0:2] is not.  If you have Numpy available, `image.array` has more slicing options.
        ITERATION.
        `image.height` and `len(image)` return the number of rows; `image.width` returns the number of columns.
-       `for row in image:` and `for row in image.by_row` each yield successive rows.
-       `for pixel in image.by_pixel:` yields successive pixel values, scanning across each row top to bottom.
+       `for row in image:` and `for row in image.rows` each yield successive rows.
+       `for pixel in image.pixels:` yields successive pixel values, scanning across each row top to bottom.
        `for x,y,pixel in image.enumerated:` yields pixel values along with their coordinates in the image.
        CONVERSION TO OTHER DATATYPES.
        `image.copy()` creates an ImageContainer with a copy of image.value that will remain valid after this timestep.
@@ -930,6 +930,8 @@ class ImageContainer(Generic[ImagePixelType]):
     def __init_subclass__(subclass, **kwargs):
         super().__init_subclass__(**kwargs)
         subclass._get_image.restype = POINTER(subclass.pixel_type)
+
+    # --- ImageContainer dimensions ---
 
     def __len__(self) -> int:
         """The number of rows in this image."""
@@ -956,11 +958,25 @@ class ImageContainer(Generic[ImagePixelType]):
            the corresponding numpy array would have. Note that shape orders y before x."""
         return self.height, self.width
 
+    # --- ImageContainer Values ---
+
     @timed_cached_property
     def value(self) -> Sequence[Sequence[ImagePixelType]]:
-        """Returns the current image of this ImageContainer as a ctypes array of rows of pixels.
+        """It is generally advised to use the ImageContainer itself, e.g., `camera` rather than its .value, since
+           the ImageContainer provides more iteration options, more indexing options (including `camera[y,x]`) and
+           automatically returns copies of complex pixel values to avoid worries about accidentally keeping a value
+           that shares memory that will expire.  If you're sure you won't need these conveniences and safety,
+           it can be slightly faster to work with the raw camera.value. However if speed is important, it will
+           typically be faster still to use numpy and/or opencv to work with camera.array!
+           Returns the current image of this ImageContainer as a 2D ctypes array of rows of pixels that share memory
+           with the Webots simulation, so is valid only for the current timestep.
            The type of the pixel varies with ImageContainer type, e.g. being floats for rangefinder/lidar range images,
-           ColorBGRA for camera/segmentation images, and Lidar.Point for lidar point clouds."""
+           ColorBGRA for camera/segmentation images, and Lidar.Point for lidar point clouds.
+           BEWARE: image.value[y] will return a 1D ctypes array that also shares memory with the image and hence with
+           the simulation, so this row will also be valid only for this timestep.
+           Similarly, for complex pixel types (ColorBGRA and Lidar.Point) indexing image.value[y][x] returns a pixel
+           that also shares memory with its row, image, and webots, so also will be valid only until end of timestep.
+           If you'll want to refer to such a row or pixel later, be sure to make a copy of it!"""
         width, height = self._get_width(self.tag), self._get_height(self.tag)
         c_arraytype = height * (width * self.pixel_type)
         ptr = self._get_image(self.tag)
@@ -968,6 +984,52 @@ class ImageContainer(Generic[ImagePixelType]):
             WarnOnce(f"Attempt to get image from {self} failed. Returning empty list instead.")
             return []
         return ctypes.cast(ptr, POINTER(c_arraytype))[0]
+
+    class Row(Sequence[ImagePixelType]):
+        """A Row serves as a stable window onto a row of an ImageContainer, always seeing through to its up-to-date
+           value, so the Row continues to be usable for as long as the ImageContainer remains enabled.
+           When a pixel is demanded from a Row (or directly from the ImageContainer) a stable copy of that pixel is
+           returned, rather than the ctypes default shared-memory version.
+           In contrast the raw ImageContainer.value and its own rows and pixels all share memory with the Webots
+           simulation, so are valid only for the current timestep.  Rows or especially pixel values could easily be
+           stored and re-used after the shared memory had expired which could lead to surprising results or worse.
+           To avoid this, when indexing or iterating an ImageContainer, e.g. (with camera[y] or camera[y, x]) we
+           use Row objects to mediate contact with the rows and pixels, and ensure that ordinary users deal only
+           with stable objects that do not share memory and will not expire after the current timestep."""
+
+        def __init__(self, image:'ImageContainer', index:int):
+            self.image = image
+            self.index = index
+            self.neednt_copy_pixels = image.pixel_type is c_float
+
+        def __repr__(self): return f"{self.image}[{self.index}]"
+
+        @timed_cached_property
+        def value(self) -> Sequence[ImagePixelType]:
+            v = self.image.value
+            w = v[self.index]
+            return self.image.value[self.index]
+
+        def __len__(self): return self.image.width
+
+        @overload  # row[index] returns a copy of a pixel
+        def __getitem__(self: 'ImageContainer.Row[ImagePixelType]', item: int) -> ImagePixelType: pass
+        @overload  # row[slice] returns a list of copied pixels
+        def __getitem__(self: 'ImageContainer.Row[ImagePixelType]', item: slice) -> List[ImagePixelType]: pass
+        def __getitem__(self, item):
+            if self.neednt_copy_pixels:  # ctypes will copy floats for us
+                return self.value[item]
+            if isinstance(item, int):  # row[index] returns a copy of that pixel
+                return self.image.pixel_type(self.value[item])
+            else:                      # row[slice] returns a list of copied pixels
+                return [self.image.pixel_type(pixel) for pixel in self.value[item]]
+
+    @cached_property
+    def rows(self) -> List[Row[ImagePixelType]]:
+        """A list of stable windows onto rows of this ImageContainer, which will remain uptodate even as the image
+           changes.  Rather than returning pixels that share memory with the underlying image, indexing within
+           these rows will instead return stable copies of those pixels."""
+        return [self.Row(self, index) for index in range(self.height)]
 
     # Two-dimensional __getitem__ can return a variety of value types; we start by type-declaring them
     @overload  # image[slice] returns a sequence of rows
@@ -985,30 +1047,22 @@ class ImageContainer(Generic[ImagePixelType]):
         if isinstance(item, tuple):
             y, x = item
             if x == slice(None, None, None) or x is Ellipsis:  # container[y,:], container[y,...]
-                return self.value[y]
-            return self.value[y][x]
-        return self.value[item]
-        # TODO if we don't want color images to return colors that share memory, probably need to make each of the
-        #      row accesses more complicated to return a new container whose getitem copies pixels before returning them
-        #      or perhaps to return a copy of the row.  Or this could pre-emptively copy the whole image
-
+                return self.rows[y]
+            else:
+                return self.rows[y][x]
+        return self.rows[item]
 
     # --- ImageContainer iteration ---
 
     def __iter__(self:'ImageContainer[ImagePixelType]') -> Iterable[Sequence[ImagePixelType]]:
         """`for row in imagecontainer` yields successive rows from the image.
-           Equivalent to `for row in imagecontainer.by_row`."""
-        return iter(self.value)
+           Equivalent to `for row in imagecontainer.rows`."""
+        return iter(self.rows)
 
     @property
-    def by_row(self:'ImageContainer[ImagePixelType]') -> Iterable[Sequence[ImagePixelType]]:
-        """`for row in imagecontainer.by_row:` yields successive rows from the image."""
-        return iter(self.value)
-
-    @property
-    def by_pixel(self: 'ImageContainer[ImagePixelType]') -> Iterable[ImagePixelType]:
-        """`for value in imagecontainer.by_pixel:` yields successive pixel values, scanning each row, from top down."""
-        return itertools.chain.from_iterable(self.value)
+    def pixels(self: 'ImageContainer[ImagePixelType]') -> Iterable[ImagePixelType]:
+        """`for pixel in imagecontainer.pixels:` yields successive pixel values, scanning each row, from top down."""
+        return itertools.chain.from_iterable(self.rows)
 
     @property
     def enumerated(self: 'ImageContainer[ImagePixelType]') -> Iterable[Tuple[int, int, ImagePixelType]]:
@@ -1073,8 +1127,8 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
        `camera[y,x]` returns the current reading of the Camera at row y, column x (fast). Note y index comes first!
          At most one of these indices can be a slice, e.g., 0:2.
        `camera[y]` returns row y of the the current Camera reading
-       `for row in camera` and `for row in camera.by_row` iterate through rows, from top to bottom.
-       `for pixel in camera.by_pixel` and `for x, y, pixel in camera.enumerated` go through all pixels, row after row.
+       `for row in camera` and `for row in camera.rows` iterate through rows, from top to bottom.
+       `for bgra in camera.pixels` and `for x, y, bgra in camera.enumerated` go through all pixels, row after row.
        `camera.value` returns a ctypes array containing the Camera's current reading. This array shares memory
          with Webots, so is valid only for the duration of this timestep. If you'll want access to this information
          later, you'll need to copy it. This array is a sequence of rows, where each row is a sequence of floats.
@@ -1265,111 +1319,12 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
     class Recognition(Sensor, SurrogateValue):
         _api_name = "camera_recognition"
 
-        class Object(ctypes.Structure):
-            """A Camera.Recognition.Object is a ctypes structure that stores information about an object recognized
-               by this camera.  Each Recognition.Object shares memory with the Webots simulation, which makes it
-               quick to access select information, but makes each Object valid only for the current timestep.
-               If you will want to refer back back to a Recognition.Object's values later, you'll need to make a copy
-               of them this timestep while the object is still valid to use.
-               TODO provide copying mechanism?
-               TODO check how many attributes return values that themselves share memory and consider making them copy,
-                since proliferating values that share memory risks having lasting copies of these be unwittingly stored.
-                The simplest way to do this is probably to rename the c field, e.g. to be c_colors and write a
-                property to access that on demand. Slower but safer would be to always return a stable copy of all info.
-                e.g: Note, the accessed attributes themselves will not share memory with the underlying simulation.  E.g.
-                accessing recobject.position will return a separate vector that will remain usable in later timesteps.
-               """
-            # Declare fields for c_types conversion from C-API
-            _fields_ = [('id', c_int),
-                        ('position', Vec3f),
-                        ('orientation', Rotation),
-                        ('size', Vec2i),
-                        ('position_on_image', Vec2i),
-                        ('size_on_image', Vec2i),
-                        ('number_of_colors', c_int),
-                        ('colors', Color3f_p),
-                        ('model', c_char_p)]
-
-            # Re-declare attributes for Python linters
-            id: int
-            position: Vec3f
-            orientation: Rotation
-            size: Vec2i
-            position_on_image: Vec2i
-            size_on_image: Vec2i
-            number_of_colors: int
-            colors: Sequence[Color3f]
-            model: str
-
-            # The following were adapted from the old Python API and apparently called methods from swig/C++
-            # id = property(wb.wb_camera_recognition_object_id_getXXX, wb.wb_camera_recognition_object_id_setXXX)
-            # position = property(wb.wb_camera_recognition_object_position_getXXX,
-            #                     wb.wb_camera_recognition_object_position_setXXX)
-            # orientation = property(wb.wb_camera_recognition_object_orientation_getXXX,
-            #                        wb.wb_camera_recognition_object_orientation_setXXX)
-            # size = property(wb.wb_camera_recognition_object_size_getXXX, wb.wb_camera_recognition_object_size_setXXX)
-            # position_on_image = property(wb.wb_camera_recognition_object_position_on_image_getXXX,
-            #                              wb.wb_camera_recognition_object_position_on_image_setXXX)
-            # size_on_image = property(wb.wb_camera_recognition_object_size_on_image_getXXX,
-            #                          wb.wb_camera_recognition_object_size_on_image_setXXX)
-            # number_of_colors = property(wb.wb_camera_recognition_object_number_of_colors_getXXX,
-            #                             wb.wb_camera_recognition_object_number_of_colors_setXXX)
-            # colors = property(wb.wb_camera_recognition_object_colors_getXXX, wb.wb_camera_recognition_object_colors_setXXX)
-            # model = property(wb.wb_camera_recognition_object_model_getXXX, wb.wb_camera_recognition_object_model_setXXX)
-
-            def __repr__(self): return f"Camera.Recognition.Object(#{self.id})"
-
-            @use_docstring_as_deprecation_warning
-            def get_position(self):
-                """DEPRECATED. Recognition.Object.get_position is deprecated. Use object.position instead."""
-                return self.position
-
-            @use_docstring_as_deprecation_warning
-            def get_orientation(self):
-                """DEPRECATED. Recognition.Object.get_orientation is deprecated. Use object.orientation instead."""
-                return self.orientation
-
-            @use_docstring_as_deprecation_warning
-            def get_size(self):
-                """DEPRECATED. Recognition.Object.get_size is deprecated. Use object.size instead."""
-                return self.size
-
-            @use_docstring_as_deprecation_warning
-            def get_position_on_image(self):
-                """DEPRECATED. Recognition.Object.get_position_on_image is deprecated. Use object.position_on_image instead."""
-                return self.position_on_image
-
-            @use_docstring_as_deprecation_warning
-            def get_size_on_image(self):
-                """DEPRECATED. Recognition.Object.get_size_on_image is deprecated. Use object.size_on_image instead."""
-                return self.size_on_image
-
-            @use_docstring_as_deprecation_warning
-            def get_colors(self):
-                """DEPRECATED. Recognition.Object.get_colors is deprecated. Use object.colors instead."""
-                return self.colors
-
-            @use_docstring_as_deprecation_warning
-            def get_id(self):
-                """DEPRECATED. Recognition.Object.get_id is deprecated. Use object.id instead."""
-                return self.id
-
-            @use_docstring_as_deprecation_warning
-            def get_number_of_colors(self):
-                """DEPRECATED. Recognition.Object.get_number_of_colors is deprecated. Use object.number_of_colors instead."""
-                return self.number_of_colors
-
-            @use_docstring_as_deprecation_warning
-            def get_model(self):
-                """DEPRECATED. Recognition.Object.get_model is deprecated. Use object.model instead."""
-                return self.model
-
         # --- Camera.Recognition initialization ---
 
         def __init__(self, camera: 'Camera'):
             self.camera = camera
             self.tag = camera.tag
-            wb.wb_camera_enable_recognition(self.tag)  # automatically enable (share's parent camera's sampling period)
+            self.sampling = True  # automatically enable (share's parent camera's sampling period)
 
         def __repr__(self):
             return f"{self.camera}.recognition"
@@ -1378,19 +1333,144 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
             # TODO or should this be len(self.value)??? Or just left to surrogate value to handle?
             return wb.wb_camera_recognition_get_number_of_objects(self.tag)
 
+        class Object(ctypes.Structure):
+            """A Camera.Recognition.Object is a ctypes structure that stores information about an object recognized
+               by this camera.  Each Recognition.Object shares memory with the Webots simulation, which makes it
+               quick to access select information, but makes each Object valid only for the current timestep.
+               If you will want to refer back back to a Recognition.Object's values later, you'll need to make a copy
+               of them this timestep while the object is still valid to use.
+               TODO provide copying mechanism?
+               Returned attributes like obj.translation themselves do not share memory with Webots, so may be
+               retained and used after the current timestep. (These attributes each have raw versions like
+               obj._translation that are slightly faster to access, but are valid only in this timestep!)"""
+
+            def __repr__(self):
+                return f"Camera.Recognition.Object({self._model.decode()}{' ' if self._model else ''}#{self.id})"
+
+            # Declare fields for c_types conversion from C-API (most of these share memory with Webots!)
+            _fields_ = [('_id', c_int),
+                        ('_translation', Vec3f),
+                        ('_rotation', Rotation),
+                        ('_size', Vec2f),
+                        ('_position_on_image', Vec2i),
+                        ('_size_on_image', Vec2i),
+                        ('_number_of_colors', c_int),
+                        ('_colors_ptr', Color3f_p),
+                        ('_model', c_char_p)]
+
+            # Re-declare raw fields for Python linters: Beware most of these share memory with Webots!
+            _id: int
+            _translation: Vec3f
+            _rotation: Rotation
+            _size: Vec2f
+            _position_on_image: Vec2i
+            _size_on_image: Vec2i
+            _number_of_colors: int
+            _colors_ptr: Color3f_p
+            _model: bytes
+
+            def _colors(self) -> Sequence[Color3f]:
+                return self._colors_ptr[:self._number_of_colors]
+
+            # --- Recognition.Object properties for ordinary users ---
+
+            @property
+            def id(self) -> int:
+                """Returns the unique node id of this recognition object in the scene tree."""
+                return self._id
+            @use_docstring_as_deprecation_warning
+            def get_id(self):
+                """DEPRECATED. Recognition.Object.get_id is deprecated. Use obj.id instead."""
+                return self.id
+
+            @property
+            def translation(self) -> Vector[float]:
+                """Returns the translation of this recognition object relative to the camera."""
+                return Vector(self._translation)
+            position = translation
+            @use_docstring_as_deprecation_warning
+            def get_position(self) -> Vector[float]:
+                """DEPRECATED. Recognition.Object.get_position is deprecated. Use obj.translation instead."""
+                return self.position
+
+            @property
+            def rotation(self) -> Rotation:
+                """Returns the rotation of this recognition object relative to the camera as a 4D axis-angle vector."""
+                return Rotation(self._rotation)
+            orientation = rotation
+            @use_docstring_as_deprecation_warning
+            def get_orientation(self) -> Rotation:
+                """DEPRECATED. Recognition.Object.get_orientation is deprecated. Use obj.rotation instead."""
+                return self.orientation
+
+            @property
+            def size(self) -> Vector[float]:
+                """Returns the size of this recognition object in the two dimenstions perpendicular to the
+                   camera's line of sight, in meters."""
+                return Vector(self._size)
+            @use_docstring_as_deprecation_warning
+            def get_size(self) -> Vector[float]:
+                """DEPRECATED. Recognition.Object.get_size is deprecated. Use obj.size instead."""
+                return self.size
+
+            @property
+            def position_on_image(self) -> Vector[int]:
+                """Returns the position_on_image of this recognition object, in pixels."""
+                return Vector(self._position_on_image)
+            @use_docstring_as_deprecation_warning
+            def get_position_on_image(self) -> Vector[int]:
+                """DEPRECATED. Recognition.Object.get_position_on_image is deprecated. Use obj.position_on_image instead."""
+                return self.position_on_image
+
+            @property
+            def size_on_image(self) -> Vector[int]:
+                """Returns the size_on_image of this recognition object, in pixels."""
+                return Vector(self._size_on_image)
+            @use_docstring_as_deprecation_warning
+            def get_size_on_image(self) -> Vector[int]:
+                """DEPRECATED. Recognition.Object.get_size_on_image is deprecated. Use obj.size_on_image instead."""
+                return self.size_on_image
+
+            @property
+            def colors(self) -> List[Color]:
+                """Returns a list of recognition colors of this recognition object."""
+                return [Color(c) for c in self._colors_ptr[:self._number_of_colors]]
+            @use_docstring_as_deprecation_warning
+            def get_colors(self) -> List[Color]:
+                """DEPRECATED. Recognition.Object.get_colors is deprecated. Use obj.colors instead."""
+                return self.colors
+            @use_docstring_as_deprecation_warning
+            def get_number_of_colors(self) -> int:
+                """DEPRECATED. Recognition.Object.get_number_of_colors is deprecated. Use len(obj.colors) instead."""
+                return self._number_of_colors
+
+            @property
+            def model(self) -> str:
+                """Returns the content of the model field of this recognition object's node in the scene tree."""
+                return self._model.decode()
+            @use_docstring_as_deprecation_warning
+            def get_model(self) -> str:
+                """DEPRECATED. Recognition.Object.get_model is deprecated. Use obj.model instead."""
+                return self.model
+
         # --- Camera.Recognition.value ---
 
         wb.wb_camera_recognition_get_objects.restype = POINTER(Object)
         @timed_cached_property
         def value(self) -> Sequence[Object]:
-            """Returns the current value of this Camera.Recognition system as a ctypes array of Camera.Recognition.Objects.
-               Each Object has... XXX"""
+            """It is generally recommended to use camera.recognition itself as a surrogate for camera.recognition.value.
+               E.g. you should typically use `for obj in camera.recognition` or `camera.recognition[i]`, and
+               beware that each recognition object is valid only for the current timestep, so you should copy
+               out whatever information you might want to access later!
+               `camera.recognition.value` returns the current raw value of this Camera.Recognition system as a
+               ctypes array of Camera.Recognition.Objects. This array, and each of the Objects in it, shares memory
+               with the Webots simulation, so is valid only for the current timestep!  The objects' properties, like
+               obj.translation and obj.rotation do not share memory and are safe to retain after this timestep."""
             num = wb.wb_camera_recognition_get_number_of_objects(self.tag)
             if num == 0: return []
             ptr = wb.wb_camera_recognition_get_objects(self.tag)
             if not ptr: return []
             c_arraytype = num * Camera.Recognition.Object
-            # TODO consider copying because there's a significant risk of some component being stored elsewhere
             return ctypes.cast(ptr, POINTER(c_arraytype))[0]
 
         # --- Camera.Recognition.Segmentation
@@ -1525,8 +1605,8 @@ class Lidar(ImageContainer[float], Device, Sensor):
        `lidar[y,x]` returns the current reading of the Lidar at row y, column x (fast). Note y index comes first!
          At most one of these indices can be a slice, e.g., 0:2.
        `lidar[y]` returns row y of the the current Lidar reading
-       `for row in lidar` and `for row in lidar.by_row` iterate through rows, from top to bottom.
-       `for pixel in lidar.by_pixel` and `for x, y, pixel in lidar.enumerated` go through all pixels, row after row.
+       `for row in lidar` and `for row in lidar.rows` iterate through rows, from top to bottom.
+       `for pixel in lidar.pixels` and `for x, y, pixel in lidar.enumerated` go through all pixels, row after row.
        `lidar.value` returns a ctypes array containing the Lidar's current reading. This array shares memory
          with Webots, so is valid only for the duration of this timestep. If you'll want access to this information
          later, you'll need to copy it. This array is a sequence of rows, where each row is a sequence of floats.
@@ -1813,8 +1893,8 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
        `rf[y]` returns row y of the the current RangeFinder reading
        `rf[y,x]` returns the current reading of the RangeFinder at row y, column x (fast). Note y index comes first!
          At most one of these indices can be a slice, e.g., 0:2.
-       `for row in rf` and `for row in rf.by_row` iterate through rows, from top to bottom.
-       `for pixel in rf.by_pixel` and `for x, y, pixel in rf.enumerated` go through all pixels, row after row.
+       `for row in rf` and `for row in rf.rows` iterate through rows, from top to bottom.
+       `for pixel in rf.pixels` and `for x, y, pixel in rf.enumerated` go through all pixels, row after row.
        `rf.value` returns a ctypes array containing the RangeFinder's current reading. This array shares memory
          with Webots, so is valid only for the duration of this timestep. If you'll want access to this information
          later, you'll need to copy it. This array is a sequence of rows, where each row is a sequence of floats.
