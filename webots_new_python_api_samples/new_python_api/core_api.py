@@ -75,7 +75,8 @@ class timed_cached_property:
     """A timed_cached_property works much like a cached_property (a low priority descriptor that stores its return
        value as the corresponding instance-attribute so future attempts to retrieve this value will get this cached
        value directly without retriggering the property getter), except it checks whether the simulation time has
-       changed since the time of the last caching, and if so, refreshes the stale cache."""
+       advanced past the time of the last caching, and if so, refreshes the stale cache."""
+    # Note: Some objects may veto updating by setting a higher, or even infinite, `_{__name__}_last_update_time`
 
     def __init__(self, getter ):
         self.__doc__ = getter.__doc__
@@ -88,7 +89,7 @@ class timed_cached_property:
 
     def __get__(self, instance, cls=None):
         if instance is None: return self # C.f returns descriptor itself
-        if time == instance.__dict__.get(self.update_name, None):
+        if time <= instance.__dict__.get(self.update_name, -1):
             return instance.__dict__[self.__name__]
         value = self._getter(instance)
         instance.__dict__[self.__name__] = value # cache value f(i) as i.f

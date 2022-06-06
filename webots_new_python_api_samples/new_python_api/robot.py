@@ -106,7 +106,7 @@ class InstallOnDemand:
         globals()[self._name] = dev   # for RobotPseudoSensors this is also done by their __init__
         return dev
 
-class RobotPseudoSensor(Sensor, auto_link_wb_methods=False):
+class RobotPseudoSensor(Sensor, auto_link_wb_methods = False):
     """This abstract class contains various unique sensor-like objects that don't correspond to device nodes within
        the simulation, like the joystick, keyboard, mouse, and battery.  These are made available as
        attributes of the Robot class itself, e.g. as robot.keyboard  Those attributes are initially filled by
@@ -124,9 +124,10 @@ class RobotPseudoSensor(Sensor, auto_link_wb_methods=False):
     def __repr__(self): return self._robot_attribute # e.g. 'keyboard'
 
 
-class Battery(RobotPseudoSensor, SurrogateValue, api_name = "robot_battery_sensor"):
+class Battery(RobotPseudoSensor, SurrogateValue):
     """The battery is not implemented in Webots as a separate node in the scene tree, but in Python we interface
        with it much as we would with other sensors."""
+    _api_name = "robot_battery_sensor"  # Now Sensor superclass can find associated enable/disable/period methods
 
     def __init__(self, sampling = True):
         """The battery is not implemented in Webots as a separate node in the scene tree, but in Python we interface
@@ -134,7 +135,7 @@ class Battery(RobotPseudoSensor, SurrogateValue, api_name = "robot_battery_senso
            readings using the simulation's basic timestep as the sampling period, or this may be adjusted with
            robot.battery.sampling .  The battery sensor's value is accessible via robot.battery.value
            though, as a SurrogateValue, robot.battery itself can usually play the same role as this .value."""
-        super().__init__( self, sampling = sampling )
+        super().__init__(self, sampling = sampling)
         # TODO initialize dummy .value in case this gets read too soon
 
     wb.wb_robot_battery_sensor_get_value.restype = c_double
@@ -393,7 +394,7 @@ class Keyboard(ButtonTracker, RobotPseudoSensor, SurrogateValue):
         return next( self._iter_cached_buttons, -1 )
 
 
-class Mouse( RobotPseudoSensor ):
+class Mouse(RobotPseudoSensor):
     """robot.mouse provides information about the current position of the mouse.  Upon first reference to robot.mouse
        this will automatically be enabled to produce new readings each basic timestep, or this may be adjusted in
        the same manner as other sensors with robot.mouse.sampling = new_period.
@@ -466,25 +467,16 @@ class Mouse( RobotPseudoSensor ):
     @surrogate_attribute
     def z     (self) -> float: "Global z coordinate of the mouse cursor (if you've set mouse.xyz.sampling = True)"
 
-    class XYZ_Vector( Vector ):
+    class XYZ_Vector(Vector, SecondarySensor):
         """A Vector representing the mouse position in 3D space, with an .sampling property that can be used to
            read/adjust whether such mouse.xyz readings will be available or just NotaNumber(NaN). Requires first setting
            robot.mouse.xyz.sampling = True since computing this position is somewhat computationally expensive."""
 
-        # TODO Think about whether this should be a class_property instead of a property
-        wb.wb_mouse_is_3d_position_enabled.restype = c_bool
-        @property
-        def sampling(self)->bool:
-            """Setting robot.mouse.xyz.sampling = True will enable mouse.xyz to return the location of the cursor
-               in 3D space.  Setting it to False will disable this, which will save processing time.  The current
-               setting may be read as robot.mouse.xyz.sampling """
-            return wb.wb_mouse_is_3d_position_enabled()
-        @sampling.setter
-        def sampling(self=None, new_value:bool = True):
-            if new_value:
-                wb.wb_mouse_enable_3d_position()
-            else:
-                wb.wb_mouse_disable_3d_position()
+        _enable = wb.wb_mouse_enable_3d_position
+        _disable = wb.wb_mouse_disable_3d_position
+        _get_sampling =  wb.wb_mouse_is_3d_position_enabled
+
+        # TODO think about whether this should be a new vector each time, or a surrogate vector, like other sensors?
 
     @property
     def uv(self)->Vector:

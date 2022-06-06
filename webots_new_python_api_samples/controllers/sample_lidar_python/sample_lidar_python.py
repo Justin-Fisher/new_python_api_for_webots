@@ -86,8 +86,9 @@ while robot.step(TIME_STEP):
         cloud_xzy[...,0] = input[...,0]     # keep the x/forwards/0 input at the blue/0 position
         cloud_xzy[...,1] = input[...,2]*6-2 # shift the z/up/2 input to the green/1 position, transform since world is quite flat
         cloud_xzy[...,2] = input[...,1]     # shift the y/left/1 input to the red/2 position
+        # cloud_xzy = np.nan_to_num(cloud_xzy, copy=False, nan = 4.9, posinf=4.9, neginf=-4.9)
         cloud_xzy.clip(-4.9,4.9, cloud_xzy) # ensure that all are in nominal range (esp. occasional infinities!)
-        cloud_b = np.array((cloud_xzy+6)*(255/11), dtype='B')  # convert to bytes ranging 0..255
+        cloud_b = np.array((cloud_xzy+5)*(255/11), dtype='B')  # convert to bytes ranging 0..255
         img_BGRA[:,:,:3] = cloud_b                             # copy into the BGR part of img_BGRA
     else:
         # This uses img_f created above

@@ -7,4 +7,4 @@ centralWidgetVisible: 1
 orthographicViewHeight: 1
 textFiles: 0 "../../../../../../../../Program Files/Webots/projects/samples/devices/controllers/lidar/lidar.c"
 consoles: Console:All:All
-renderingDevicePerspectives: MyBot:display;1;3.09766;0;0
+renderingDevicePerspectives: MyBot:display;1;3.09375;0;0

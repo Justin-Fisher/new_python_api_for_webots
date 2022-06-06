@@ -224,12 +224,13 @@ class Device(metaclass=MetaDevice):
     def __repr__(self):  # E.g., LightSensor("light sensor 3")
         return f'{type(self).__name__}("{self.name}")'
 
-    def __init_subclass__(subclass, api_name: str = None, **kwargs):
+    def __init_subclass__(subclass, **kwargs):
         """This will be called whenever a new subclass of Device is created below.  This does standard things
-           including setting the api_name for the subclass (defaults to that subclass' own name),
+           including auto-creating a ._api_name for the subclass (if it didn't explicitly define an idiosyncratic one),
            and remembering that the corresponding WB_NODE_CONSTANT maps to this subclass to speed future lookups."""
-        subclass.api_name = api_name if api_name != None else snake_case(subclass.__name__)
-        subclass._nodeTypeConstant = globals().get(f"WB_NODE_{subclass.api_name.upper()}", None)
+        if '_api_name' not in subclass.__dict__:
+            subclass._api_name = snake_case(subclass.__name__)  # e.g. 'DistanceSensor' -> 'distance_sensor'
+        subclass._nodeTypeConstant = globals().get(f"WB_NODE_{subclass._api_name.upper()}", None)
         if subclass._nodeTypeConstant:
             Device.map_nodetype_to_subclass[subclass._nodeTypeConstant] = subclass
         super().__init_subclass__(**kwargs)  # allows potential multi-inheritance from this
@@ -298,28 +299,39 @@ class Sensor():
     # TODO: it could make sense to temporarily cache sensor .values so that repeated lookups during the same
     #       e.g. using timed_cached_properties
 
-    def __init_subclass__(subclass, api_name: str = None, auto_link_wb_methods = True, **kwargs):
+    def __init_subclass__(subclass, auto_link_wb_methods = True, **kwargs):
         """This will be called whenever a new subclass of Sensor is created below.
-           Unless auto_link_wb_methods is False, this will automatically associate that subclass with
-           various wb_api functions for enabling/disabling it."""
-        # for Device+Sensor hybrids, Device should have set api_name; and we don't wanna override
-        if 'api_name' not in subclass.__dict__:
-            subclass.api_name = api_name if api_name is not None else snake_case(subclass.__name__)
-        super().__init_subclass__(**kwargs) # allows potential further multi-inhericance
+           Unless this subclass has already defined these itself, or sends auto_link_wb_methods = False,
+           this will automatically associate that subclass with an _api_name based on its class __name__ and
+           with various wb_api functions for enabling/disabling it and returning its sampling period."""
+        # Auto-compute any relevant wb_names that the subclass didn't explicitly define
         if auto_link_wb_methods:
-            subclass._enable  = getattr(wb, f"wb_{subclass.api_name}_enable")
-            subclass._disable = getattr(wb, f"wb_{subclass.api_name}_disable")
-            subclass._get_sampling_period = getattr(wb, f"wb_{subclass.api_name}_get_sampling_period")
+            if '_api_name' not in subclass.__dict__:
+                subclass._api_name = snake_case(subclass.__name__)  # e.g. 'DistanceSensor' -> 'distance_sensor'
+            if '_enable' not in subclass.__dict__:
+                subclass._enable  = getattr(wb, f"wb_{subclass._api_name}_enable")
+            if '_disable' not in subclass.__dict__:
+                subclass._disable = getattr(wb, f"wb_{subclass._api_name}_disable")
+            if '_get_sampling' not in subclass.__dict__:
+                subclass._get_sampling = getattr(wb, f"wb_{subclass._api_name}_get_sampling_period")
+            super().__init_subclass__(**kwargs) # allows potential further multi-inheritance
 
     def __repr__(self): return type(self).__name__
 
     @cached_property
-    def _tag_if_needed(self):
+    def _tag_if_needed(self) -> Iterable[int]:
         """Sensors associated with a particular Device must pass Device tag as an argument; other sensors don't.
            We return a tuple, so that unpacking it with * can insert 1 or 0 arguments, as needed."""
         # some devices may be surrogates so we don't want to trigger their .value, so we look only in own __dict__
-        tag = self.__dict__.get('tag', None)
-        return (tag,) if tag else tuple()
+        if 'tag' in self.__dict__: return (self.tag,)
+        return ()
+
+    @property
+    def default_sampling_period(self):
+        """For ordinary Sensors the default_sampling_period is the simulation's basic time step. When initially
+           referenced, sensors will automatically be enabled with this as their sampling period.
+           This will also be used if when setting sensor.sampling = True or calling sensor.enable()."""
+        return wb.wb_robot_get_basic_time_step()
 
     @property
     def sampling(self) -> int:
@@ -328,10 +340,10 @@ class Sensor():
            sensor.sampling = new_sampling_period.  Setting sensor.sampling = True enables that sensor using the
            simulation's basic timestep as its sampling period (done by default on Sensor creation).
            Setting sensor.sampling = None disables that sensor from making new readings."""
-        return self._get_sampling_period(*self._tag_if_needed)
+        return self._get_sampling(*self._tag_if_needed)
     @sampling.setter
     def sampling(self, new_sampling_period: Union[int, bool, None]):
-        if new_sampling_period is True: new_sampling_period = wb.wb_robot_get_basic_time_step()
+        if new_sampling_period is True: new_sampling_period = self.default_sampling_period
         if new_sampling_period > 0:
             self._enable(*self._tag_if_needed, int(new_sampling_period))
         else:
@@ -352,18 +364,36 @@ class Sensor():
     @use_docstring_as_deprecation_warning
     def getSamplingPeriod(self) -> int:
         """DEPRECATED: sensor.getSamplingPeriod() is deprecated. Please use sensor.sampling instead."""
-        return self._get_sampling_period(*self._tag_if_needed)
+        return self._get_sampling(*self._tag_if_needed)
+
+class SecondarySensor(Sensor, auto_link_wb_methods = False):
+    """This abstract intermediate-level class includes various objects that represent an optional secondary sensory
+       capability associated with a primary Sensor, e.g. the optional point-cloud of a lidar, optional 3D readings of a
+       mouse, or optional segmentation image of a camera's recognition capability.  Unlike ordinary "primary"
+       Sensors, SencondarySensors do not have their own sampling periods, so the only relevant values for their
+       .sampling are True (or anything truth-like) and None (or anything false-like)."""
+
+    default_sampling_period = True  # Secondary sensors inherit their primary Sensors' sampling period
+
+    def __init_subclass__(subclass, auto_link_wb_methods = True, **kwargs):
+        super().__init_subclass__(auto_link_wb_methods = auto_link_wb_methods, **kwargs)
+        if auto_link_wb_methods:
+            subclass._get_sampling.restype = c_bool  # SecondarySensors just return true/false
 
 
-class LookUpTableSensor(Device, Sensor, auto_link_wb_methods=False):
+class LookUpTableSensor(Device, Sensor, auto_link_wb_methods = False):
     """This abstract intermediate-level class includes Sensor Devices that also have lookup table methods."""
-    def __init_subclass__(subclass, api_name: str = None, **kwargs):
+
+    def __init_subclass__(subclass, **kwargs):
         """This will be called whenever a new subclass of LookUpTableSensor is created below.
            This automatically associates that class with the wb_api function for its lookup table."""
-        super().__init_subclass__(api_name=api_name, **kwargs)  # Sensor will use api_name too
-        subclass._get_lookup_table = getattr(wb, f"wb_{subclass.api_name}_get_lookup_table")
+        super().__init_subclass__(**kwargs)  # Let superclass auto-create _api_name, _enable/_disable/_sampling
+        # auto-locate wb_functions for lookup tables if the subclass does not explicitly define them itself
+        if '_get_lookup_table' not in subclass.__dict__:
+            subclass._get_lookup_table = getattr(wb, f"wb_{subclass._api_name}_get_lookup_table")
         subclass._get_lookup_table.restype = c_void_p
-        subclass._get_lookup_table_size = getattr(wb, f"wb_{subclass.api_name}_get_lookup_table_size")
+        if '_get_lookup_table_size' not in subclass.__dict__:
+            subclass._get_lookup_table_size = getattr(wb, f"wb_{subclass._api_name}_get_lookup_table_size")
 
     @property
     def lookup_table(self) -> Sequence[Vector]:
@@ -373,7 +403,7 @@ class LookUpTableSensor(Device, Sensor, auto_link_wb_methods=False):
         return ArrayType.from_address(self._get_lookup_table(self.tag))
 
     @use_docstring_as_deprecation_warning
-    def getLookupTable(self) -> Vector:
+    def getLookupTable(self) -> Sequence[Vector]:
         """DEPRECATED: Device.getLookupTable() is deprecated. Please use device.lookup_table instead, and if you want
         to use Python list.methods on it, you may need to use list() to convert the table and/or its rows to lists."""
         return self.lookup_table
@@ -522,7 +552,7 @@ class DistanceSensor(LookUpTableSensor, SurrogateValue):
         return wb.wb_distance_sensor_get_aperture(self.tag)
 
 
-class GPS(Device, Sensor, VectorValue, api_name = 'gps'):
+class GPS(Device, Sensor, VectorValue):
     """A Global Positioning Sensor (GPS) provides information about its absolute position in the simulated world.
        `gps = robot.GPS("device_name")` stores this as `gps`, and enables it to generate readings every timestep.
        `gps.coordinate_system` returns the coordinate system for this GPS, either "LOCAL" (Webots x,y,z coordinates),
@@ -537,6 +567,7 @@ class GPS(Device, Sensor, VectorValue, api_name = 'gps'):
        in degrees-minutes-seconds format.
        Like other sensors, Python automatically enables a GPS to generate readings every timestep, alterable
        by passing the `sampling=` keyword in device creation, or setting `gps.sampling = t` later."""
+    _api_name = 'gps'  # Otherwise the systematic auto-conversion of the classname 'GPS' would call this 'g_p_s'!
 
     LOCAL, WGS84 = 'LOCAL', 'WGS84'  # still defined as constants for backwards compatibility
     coordinate_system_as_string = {WB_GPS_LOCAL_COORDINATE: 'LOCAL', WB_GPS_WGS84_COORDINATE: 'WGS84'}
@@ -890,14 +921,29 @@ class ImageContainer(Generic[ImagePixelType]):
        `image.list` returns the current readings all together in one long 1D python list (slow)
        `image.nested_list` returns a 2D list of row-like lists of Lidar readings (slow)"""
 
-    # These will be dynamically provided by Device properties, or set in copying
-    value: Sequence[Sequence[ImagePixelType]]
-    width: int
-    height: int
+    tag: int  # device tag to use in associated wb_function calls (must be set by classes that aren't devices)
+    _get_width: Callable[[int], int]
+    _get_height: Callable[[int], int]
+    _get_image: Callable[[int], c_ubyte_p]
+    pixel_type: 'Union[type(c_float), type(ColorBGRA), type(Lidar.Cloud.Point)]'
+
+    def __init_subclass__(subclass, **kwargs):
+        super().__init_subclass__(**kwargs)
+        subclass._get_image.restype = POINTER(subclass.pixel_type)
 
     def __len__(self) -> int:
         """The number of rows in this image."""
         return self.height
+
+    @descriptor(prioritized=False)  # will defer to cached value, set in copying
+    def width(self) -> int:
+        """Returns the current width of this ImageContainer in pixels."""
+        return self._get_width(self.tag)
+
+    @descriptor(prioritized=False)
+    def height(self) -> int:    # will defer to cached value, set in copying
+        """Returns the current height of this Camera's segmentation image, in pixels."""
+        return self._get_height(self.tag)
 
     @property
     def size(self) -> Vector:
@@ -909,6 +955,19 @@ class ImageContainer(Generic[ImagePixelType]):
         """Returns a tuple indicating this image's (height, width) in pixels, which corresponds to the .shape
            the corresponding numpy array would have. Note that shape orders y before x."""
         return self.height, self.width
+
+    @timed_cached_property
+    def value(self) -> Sequence[Sequence[ImagePixelType]]:
+        """Returns the current image of this ImageContainer as a ctypes array of rows of pixels.
+           The type of the pixel varies with ImageContainer type, e.g. being floats for rangefinder/lidar range images,
+           ColorBGRA for camera/segmentation images, and Lidar.Point for lidar point clouds."""
+        width, height = self._get_width(self.tag), self._get_height(self.tag)
+        c_arraytype = height * (width * self.pixel_type)
+        ptr = self._get_image(self.tag)
+        if not ptr:
+            WarnOnce(f"Attempt to get image from {self} failed. Returning empty list instead.")
+            return []
+        return ctypes.cast(ptr, POINTER(c_arraytype))[0]
 
     # Two-dimensional __getitem__ can return a variety of value types; we start by type-declaring them
     @overload  # image[slice] returns a sequence of rows
@@ -925,9 +984,14 @@ class ImageContainer(Generic[ImagePixelType]):
     def __getitem__(self, item):
         if isinstance(item, tuple):
             y, x = item
-            if x is None: return self.value[y]  # container[y,:]
+            if x == slice(None, None, None) or x is Ellipsis:  # container[y,:], container[y,...]
+                return self.value[y]
             return self.value[y][x]
         return self.value[item]
+        # TODO if we don't want color images to return colors that share memory, probably need to make each of the
+        #      row accesses more complicated to return a new container whose getitem copies pixels before returning them
+        #      or perhaps to return a copy of the row.  Or this could pre-emptively copy the whole image
+
 
     # --- ImageContainer iteration ---
 
@@ -971,7 +1035,8 @@ class ImageContainer(Generic[ImagePixelType]):
         """Returns a copy of this image, with the same ImageContainer interface that the original device provided."""
         clone = ImageContainer()
         clone.width, clone.height = self.width, self.height
-        clone.value = (type(self.value).from_buffer_copy(self.value))
+        clone.__dict__['value'] = (type(self.value).from_buffer_copy(self.value))
+        clone._value_last_update_time = float('inf')  # so timed_cached_property will never try to update clone.value
         return clone
 
     # TODO probably better to just have people call bytes(img) instead?
@@ -984,7 +1049,7 @@ class ImageContainer(Generic[ImagePixelType]):
 
     @property
     def list(self: 'ImageContainer[ImagePixelType]') -> List[ImagePixelType]:
-        """Returns a 1D python list of values, scanning across each row from top down.
+        """Returns a long 1D python list of all pixel values, scanning across each row from top down.
            (Comparatively slow and typically less useful than the ImageContainer or a .copy() thereof.)"""
         return list(value for row in self.value for value in row)
 
@@ -1035,21 +1100,19 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
        TODO These are not implemented yet!
        """
 
-    #--- Camera image dimensions (accessed by ImageContainer superclass) ---
+    # Provide key information for ImageContainer superclass to provide core functionality
+    _get_width = wb.wb_camera_get_width
+    _get_height = wb.wb_camera_get_height
+    _get_image = wb.wb_camera_get_image    # ImageContainer superclass will set restype for us
+    pixel_type = ColorBGRA
 
-    @property
-    def width(self) -> int:
-        """Returns the current width of this Camera's image in pixels."""
-        return wb.wb_camera_get_width(self.tag)
+    #--- Deprecated Camera image dimensions (superceded by ImageContainer superclass) ---
+
     @use_docstring_as_deprecation_warning
     def getWidth(self) -> int:
         """DEPRECATED: Camera.getWidth() is deprecated. Please use camera.width or camera.size.x."""
         return wb.wb_camera_get_width(self.tag)
 
-    @property
-    def height(self) -> int:
-        """Returns the current height of this Camera's image, in pixels."""
-        return wb.wb_camera_get_height(self.tag)
     @use_docstring_as_deprecation_warning
     def getHeight(self) -> int:
         """DEPRECATED: Camera.getHeight() is deprecated. Please use camera.height or camera.size.y."""
@@ -1169,22 +1232,11 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
 
     # --- Camera getting images ---
 
-    wb.wb_camera_get_image.restype = c_ubyte_p
-    @timed_cached_property
-    def value(self) -> Sequence[Sequence[ColorBGRA]]:
-        """Returns the current image of this Camera as a ctypes array of rows of ColorBGRA pixels.
-           Each pixel is a ColorBGRA vector that supports vector arithmetic that themselves
-           contain 4 components (ordered BGRA)."""
-        width, height = wb.wb_camera_get_width(self.tag), wb.wb_camera_get_height(self.tag)
-        c_arraytype = (ColorBGRA * width) * height
-        ptr = wb.wb_camera_get_image(self.tag)
-        return ctypes.cast(ptr, POINTER(c_arraytype))[0]
-
     @use_docstring_as_deprecation_warning
     def getImage(self) -> bytes:
         """DEPRECATED: Camera.getImage() is deprecated. A pure equivalent is camera.bytes,
            but other options like camera.array, camera.value, or simply camera itself are likely better."""
-        return wb.wb_camera_get_image(self.tag)
+        return self.bytes
 
     def getImageArray(self) -> List[List[ColorBGRA]]:
         """DEPRECATED: Camera.getImageArray() is deprecated; camera.nested_list is a very close equivalent, or
@@ -1210,18 +1262,23 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
 
     # --- camera recognition ---
 
-    class Recognition(Sensor, SurrogateValue, api_name = 'camera_recognition'): # auto_link_wb_methods=False):
-        # # This pseudo-sensor has idiosyncratically named methods, so auto_link_wb_methods is False and we define here:
-        # _enable = wb.wb_camera_recognition_enable
-        # _disable = wb.wb_camera_recognition_disable
-        # _get_sampling_period = wb.wb_camera_recognition_get_sampling_period
+    class Recognition(Sensor, SurrogateValue):
+        _api_name = "camera_recognition"
 
         class Object(ctypes.Structure):
-            """A Camera.Recognition.Object is used to convey information about an object recognized by a camera.
-               TODO keep this?: Each Recognition.Object shares memory with the Webots simulation, which makes them
-                quick to access, but makes them valid only for the current timestep.  If you will
-                want to refer back to their values later, you'll need to make a copy
-               TODO provide copying mechanism?"""
+            """A Camera.Recognition.Object is a ctypes structure that stores information about an object recognized
+               by this camera.  Each Recognition.Object shares memory with the Webots simulation, which makes it
+               quick to access select information, but makes each Object valid only for the current timestep.
+               If you will want to refer back back to a Recognition.Object's values later, you'll need to make a copy
+               of them this timestep while the object is still valid to use.
+               TODO provide copying mechanism?
+               TODO check how many attributes return values that themselves share memory and consider making them copy,
+                since proliferating values that share memory risks having lasting copies of these be unwittingly stored.
+                The simplest way to do this is probably to rename the c field, e.g. to be c_colors and write a
+                property to access that on demand. Slower but safer would be to always return a stable copy of all info.
+                e.g: Note, the accessed attributes themselves will not share memory with the underlying simulation.  E.g.
+                accessing recobject.position will return a separate vector that will remain usable in later timesteps.
+               """
             # Declare fields for c_types conversion from C-API
             _fields_ = [('id', c_int),
                         ('position', Vec3f),
@@ -1244,16 +1301,7 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
             colors: Sequence[Color3f]
             model: str
 
-            # TODO need to decide whether to mediate these by properties or let ctypes sort of do it
-            #  Could have recognition.value be the underlying array, sharing memory with Webots
-            #  Could mediate access via a container interface. Accessing recognition[i] spawns a Python object
-            #  that copies the relevant data from source.
-            #  Probably would want timed_caching of these wrappers
-            #  This could be left as an implementation detail, subject to change
-            #  I think the risk may not be all that bad, so long as they don't keep whole Objects.  The main worry is
-            #  probably the vectorlike ones, that might end up trying to perpetually share memory.  Most are vectors tho
-
-
+            # The following were adapted from the old Python API and apparently called methods from swig/C++
             # id = property(wb.wb_camera_recognition_object_id_getXXX, wb.wb_camera_recognition_object_id_setXXX)
             # position = property(wb.wb_camera_recognition_object_position_getXXX,
             #                     wb.wb_camera_recognition_object_position_setXXX)
@@ -1330,7 +1378,7 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
             # TODO or should this be len(self.value)??? Or just left to surrogate value to handle?
             return wb.wb_camera_recognition_get_number_of_objects(self.tag)
 
-        # --- Camera.Recognition value ---
+        # --- Camera.Recognition.value ---
 
         wb.wb_camera_recognition_get_objects.restype = POINTER(Object)
         @timed_cached_property
@@ -1345,11 +1393,42 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
             # TODO consider copying because there's a significant risk of some component being stored elsewhere
             return ctypes.cast(ptr, POINTER(c_arraytype))[0]
 
+        # --- Camera.Recognition.Segmentation
+
+        class SegmentationImage(ImageContainer[ColorBGRA], SecondarySensor):
+            # Idiosyncratically named methods for SecondarySensor superclass to use
+            _enable = wb.wb_camera_recognition_enable_segmentation
+            _disable = wb.wb_camera_recognition_enable_segmentation
+            _get_sampling = wb.wb_camera_recognition_is_segmentation_enabled
+
+            # Provide key information for ImageContainer superclass to provide core functionality
+            _get_width = wb.wb_camera_get_width
+            _get_height = wb.wb_camera_get_height
+            _get_image = wb.wb_camera_recognition_get_segmentation_image  # ImageContainer superclass will set restype
+            pixel_type = ColorBGRA
+
+            def __init__(self, camera:'Camera'):
+                self.camera = camera
+                self.tag = camera.tag
+                self.sampling = True  # automatically enable upon creation
+
+        wb.wb_camera_recognition_has_segmentation.restype = c_bool
+        @cached_property
+        def image(self) -> SegmentationImage:
+            """camera.recognition.image returns a Camera.Recognition.SegmentationImage object that provides access
+               to this camera's recognition segmentation image, if this capability is available, or None if it isn't.
+               This will automatically be enabled on first reference to return readings whenever camera.recognition
+               does, alterable by setting camera.recognition.image.sampling to True or None.
+               When enabled, camera.recognition.image is another ImageContainer much like camera itself,
+               so e.g. you can index ColorBGRA pixels with [y, x], or convert it to a numpy array with .array."""
+            if not wb.wb_camera_recognition_has_segmentation(self.tag): return None
+            return Camera.Recognition.SegmentationImage(self.camera)
+
     wb.wb_camera_has_recognition.restype = c_bool
     @cached_property
     def recognition(self) -> Recognition:
-        """Returns a Camera.Recognition object that provides access to this camera's Recognition system, if this
-           is available, or returns None if it isn't.
+        """camera.recognition returns a Camera.Recognition object that provides access to this camera's recognition
+           system, if this is available, or returns None if it isn't.
            Whenever you first refer to camera.recognition, or if you set camera.recognition.sampling = True,
            the Recognition system will automatically be enabled to produce new readings every basic timestep.
            Or you can set another period, in milliseconds, or setting this to None disables readings, which will
@@ -1476,21 +1555,20 @@ class Lidar(ImageContainer[float], Device, Sensor):
        iterating (for row in cloud, or for x,y,point in cloud.enumerated) or fast Numpy conversion to cloud.array,
        though note that this returns a (height x width x 3) array of x,y,z coordinates."""
 
-    #--- Lidar image dimensions (accessed by ImageContainer superclass) ---
+    # Provide key information for ImageContainer superclass to provide core functionality
+    _get_width = wb.wb_lidar_get_horizontal_resolution
+    _get_height = wb.wb_lidar_get_number_of_layers
+    _get_image = wb.wb_lidar_get_range_image    # ImageContainer superclass will set restype for us
+    pixel_type = c_float
 
-    @property
-    def width(self) -> int:
-        """Returns the current horizontal_resolution of this Lidar (the width of its image, in pixels)."""
-        return wb.wb_lidar_get_horizontal_resolution(self.tag)
+
+    #--- Deprecated Lidar image dimensions (now given by ImageContainer superclass) ---
+
     @use_docstring_as_deprecation_warning
     def getHorizontalResolution(self) -> int:
         """DEPRECATED: Lidar.getHorizontalResolution() is deprecated. Please use lidar.width instead."""
         return wb.wb_lidar_get_horizontal_resolution(self.tag)
 
-    @property
-    def height(self) -> int:
-        """Returns the current number of layers of this Lidar (the height of its image, in pixels)."""
-        return wb.wb_lidar_get_number_of_layers(self.tag)
     @use_docstring_as_deprecation_warning
     def getNumberOfLayers(self) -> int:
         """DEPRECATED: Lidar.getNumberOfLayers() is deprecated. Please use lidar.number_of_layers instead."""
@@ -1574,23 +1652,7 @@ class Lidar(ImageContainer[float], Device, Sensor):
         """DEPRECATED: Lidar.getMaxRange() is deprecated. Please use lidar.max_range instead."""
         return wb.wb_lidar_get_max_range(self.tag)
 
-    # --- Lidar range images ---
-
-    wb.wb_lidar_get_range_image.restype = c_float_p
-    @timed_cached_property
-    def value(self) -> Sequence[Sequence[float]]:
-        """The current range image of this lidar, as a 2D ctypes array of floats, organized by row, so lidar.value[y]
-           returns a row, and lidar.value[y][x] returns a pixel.  NOTE: this array shares memory with the webots
-           simulation, making it fast to access, but it becomes invalid at end of timestep! If you want the information
-           for longer, you'll need to copy it, e.g. with lidar.copy(). For most purposes, you can use lidar as a
-           surrogate for lidar.value, and this offers more flexible indexing, e.g. lidar[y,x]."""
-        width, height = wb.wb_lidar_get_horizontal_resolution(self.tag), wb.wb_lidar_get_number_of_layers(self.tag)
-        c_arraytype = (c_float*width)*height
-        ptr = wb.wb_lidar_get_range_image(self.tag)
-        return ctypes.cast(ptr, POINTER(c_arraytype))[0]
-
-    # Many conversions, like to lists, bytes or numpy.arrays are inherited from ImageContainer.
-    # Here we mostly just need to link old deprecated versions to those.
+    # --- Lidar range image deprecated conversions (replaced by ImageContainer superclass) ---
 
     @use_docstring_as_deprecation_warning
     def getRangeImage(self) -> List[float]:
@@ -1609,7 +1671,12 @@ class Lidar(ImageContainer[float], Device, Sensor):
 
     # --- Lidar Point Clouds ---
 
-    class Cloud(ImageContainer['Lidar.Cloud.Point']):
+    class Cloud(ImageContainer['Lidar.Cloud.Point'], SecondarySensor):
+        # Identify idiosyncratically named wb_methods for SecondarySensor superclass
+        _enable = wb.wb_lidar_enable_point_cloud
+        _disable = wb.wb_lidar_disable_point_cloud
+        _get_sampling = wb.wb_lidar_is_point_cloud_enabled
+
         class Point(ctypes.Structure, VectorValue):
             """A Lidar.Cloud.Point is a member of a Lidar.Cloud, and indicates the coordinates of a surface-point
                detected by Lidar, in the frame of reference of the Lidar's axes.
@@ -1619,6 +1686,7 @@ class Lidar(ImageContainer[float], Device, Sensor):
                Lidar points are vector-like, so you can do standard vector arithmetic with them,
                or use helper functions like point.angle and point.distance.  These vectorized ops consider only
                the .x, .y and .z of the Point and not its .layer_id and .time."""
+
             # Declare fields for c_types conversion from C-API
             _fields_ = [('x', c_float),
                         ('y', c_float),
@@ -1641,57 +1709,20 @@ class Lidar(ImageContainer[float], Device, Sensor):
 
             def __repr__(self): return f"Lidar.Cloud.Point({self.x}, {self.y}, {self.z})"
 
-
-        # --- Lidar.Cloud initialization ---
+        # Provide key information for ImageContainer superclass to provide core functionality
+        _get_width = wb.wb_lidar_get_horizontal_resolution
+        _get_height = wb.wb_lidar_get_number_of_layers
+        _get_image = wb.wb_lidar_get_point_cloud  # ImageContainer superclass will set restype for us
+        pixel_type = Point
 
         def __init__(self, lidar: 'Lidar'):
             self.lidar = lidar
             self.tag = lidar.tag
+            super().__init__()
             wb.wb_lidar_enable_point_cloud(self.tag)  # automatically enable (share's parent lidar's sampling period)
 
         def __repr__(self):
             return f"{self.lidar}.cloud"
-
-        wb.wb_lidar_is_point_cloud_enabled.restype = c_bool
-        @property
-        def sampling(self)->bool:
-            """Setting lidar.cloud.sampling = True will enable lidar.cloud to return a 2D array of Lidar.Cloud.Points
-               each time the lidar produces a reading. This is enabled automatically on first reference to lidar.cloud.
-               Setting it to False will disable this, which will save simulation processing time.
-               The current setting may be read as lidar.cloud.sampling"""
-            return wb.wb_lidar_is_point_cloud_enabled(self.tag)
-        @sampling.setter
-        def sampling(self=None, new_value:bool = True):
-            if new_value:
-                wb.wb_lidar_enable_point_cloud(self.tag)
-            else:
-                wb.wb_lidar_disable_point_cloud(self.tag)
-
-        # --- Lidar.Cloud value and dimensions, needed by ImageContainer superclass ---
-
-        @property
-        def width(self) -> int:
-            """The width of this Lidar.Cloud, i.e. the width or horizontal resolution of this Lidar."""
-            return wb.wb_lidar_get_horizontal_resolution(self.tag)
-
-        @property
-        def height(self) -> int:
-            """The height of this Lidar.Cloud, i.e. the height or number of layers of this Lidar."""
-            return wb.wb_lidar_get_number_of_layers(self.tag)
-
-        wb.wb_lidar_get_point_cloud.restype = POINTER(Point)
-        @timed_cached_property
-        def value(self) -> Sequence[Sequence[ColorBGRA]]:
-            """Returns the current value of this Lidar.Cloud as a ctypes array of rows of Lidar.Cloud.Point pixels.
-               Each Point has its own .value that is an xyz vector pointing to a surface detected by lidar, and
-               each Point serves as a surrogate for this value, so e.g. Points can be used in vector arithmetic.
-               Each Point also has a .layer_id indicating which layer in the Lidar sampled that point
-               (i.e. its y/row index in the cloud) and .time indicating when the Lidar last sampled that point.
-               the Li vector that supports vector arithmetic that themselves."""
-            width, height = wb.wb_lidar_get_horizontal_resolution(self.tag), wb.wb_lidar_get_number_of_layers(self.tag)
-            c_arraytype = height * (width * Lidar.Cloud.Point)
-            ptr = wb.wb_lidar_get_point_cloud(self.tag)
-            return ctypes.cast(ptr, POINTER(c_arraytype))[0]
 
         @property
         def array(self):  # overriding superclass to return just xyz components
@@ -1802,21 +1833,19 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
        `rf.fov` and `rf.vertical_fov` return the horizontal and vertical fields of view of the rangefinder, in radians.
        `rf.min_range` and `rf.max_range` return bounds on the range of detectable objects."""
 
-    #--- RangeFinder image dimensions (accessed by ImageContainer superclass) ---
+    # Provide key information for ImageContainer superclass to provide core functionality
+    _get_width = wb.wb_range_finder_get_width
+    _get_height = wb.wb_range_finder_get_height
+    _get_image = wb.wb_range_finder_get_range_image  # ImageContainer superclass will set restype for us
+    pixel_type = c_float
 
-    @property
-    def width(self) -> int:
-        """Returns the current width of this RangeFinder's image, in pixels."""
-        return wb.wb_range_finder_get_width(self.tag)
+    #--- Deprecated RangeFinder image dimensions (now provided by ImageContainer superclass) ---
+
     @use_docstring_as_deprecation_warning
     def getWidth(self) -> int:
         """DEPRECATED: RangeFinder.getWidth() is deprecated. Please use rangefinder.width instead."""
         return wb.wb_range_finder_get_width(self.tag)
 
-    @property
-    def height(self) -> int:
-        """Returns the current height of this RangeFinder's image, in pixels."""
-        return wb.wb_range_finder_get_height(self.tag)
     @use_docstring_as_deprecation_warning
     def getHeight(self) -> int:
         """DEPRECATED: RangeFinder.getHeight() is deprecated. Please use rangefinder.height instead."""
@@ -1859,19 +1888,7 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
         """DEPRECATED: RangeFinder.getMaxRange() is deprecated. Please use rangefinder.max_range instead."""
         return wb.wb_range_finder_get_max_range(self.tag)
 
-    # ---RangeFinder reading values---
-
-    wb.wb_range_finder_get_range_image.restype = c_float_p
-    @timed_cached_property
-    def value(self) -> Sequence[Sequence[float]]:
-        width, height = wb.wb_range_finder_get_width(self.tag), wb.wb_range_finder_get_height(self.tag)
-        c_arraytype = (c_float*width)*height
-        # array_interface = dict(size=(height, width),
-        #                        type='<f2')
-        # array_type = type(f"RangeArray{width}x{height}", (c_arraytype, RangeFinder.RangeImage), {})
-        ptr = wb.wb_range_finder_get_range_image(self.tag)
-        return ctypes.cast(ptr, POINTER(c_arraytype))[0]
-        # return c_arraytype.from_buffer(wb.wb_range_finder_get_range_image(self.tag))
+    # ---RangeFinder deprecated value conversions (replaced by ImageContainer superclass)---
 
     # Many conversions, like to lists, bytes or numpy.arrays are inherited from ImageContainer.
     # Here we mostly just need to link old deprecated versions to those.
@@ -1884,7 +1901,7 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
            `rangefinder.array` more quickly returns a numpy array than the old buffer approach."""
         if data_type == 'buffer': return self.bytes
         if data_type == 'list': return self.list
-        WarnOnce(f"Error: RangeFinder data_type cannot be {data_type}! Supported values are 'list' and 'buffer'.\n")
+        raise TypeError(f"RangeFinder data_type cannot be {data_type}! Supported values are 'list' and 'buffer'")
 
     @use_docstring_as_deprecation_warning
     def getRangeImageArray(self):
@@ -1905,7 +1922,7 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
 
     @staticmethod
     def rangeImageGetDepth(im, width, x, y):
-        raise NotImplementedError("RangeFinder.rangeImageGetDepth() is no longer supported. Use rangefinder[x,y].")
+        raise NotImplementedError("RangeFinder.rangeImageGetDepth() is no longer supported. Use rangefinder[y,x].")
 
 
 # === Devices involving Motors ========
@@ -2177,11 +2194,10 @@ class Motor(Device, metaclass = MetaDevice['Motor']):
         """DEPRECATED: Motor.setAvailableForce(f) is deprecated. Please use motor.available_force = f instead."""
         wb.wb_motor_set_available_force(self.tag, c_double(new_available_force))
 
-    class ForceSensor(Sensor, SurrogateValue, auto_link_wb_methods=False):
-        # this has idiosyncratically named wb_methods, so we define them here, and set auto_link to False above
+    class ForceSensor(Sensor, SurrogateValue):
         _enable = wb.wb_motor_enable_force_feedback
         _disable = wb.wb_motor_disable_force_feedback
-        _get_sampling_period = wb.wb_motor_get_force_feedback_sampling_period
+        _get_sampling = wb.wb_motor_get_force_feedback_sampling_period
 
         def __init__(self, motor: 'LinearMotor'):
             self.tag = motor.tag
@@ -2262,11 +2278,10 @@ class Motor(Device, metaclass = MetaDevice['Motor']):
         """DEPRECATED: Motor.setAvailableTorque(t) is deprecated. Please use motor.available_torque = t instead."""
         wb.wb_motor_set_available_torque(self.tag, c_double(new_available_torque))
 
-    class TorqueSensor(Sensor, SurrogateValue, auto_link_wb_methods=False):
-        # this has idiosyncratically named wb_methods, so we define them here, and set auto_link to False above
+    class TorqueSensor(Sensor, SurrogateValue):
         _enable = wb.wb_motor_enable_torque_feedback
         _disable = wb.wb_motor_disable_torque_feedback
-        _get_sampling_period = wb.wb_motor_get_torque_feedback_sampling_period
+        _get_sampling = wb.wb_motor_get_torque_feedback_sampling_period
 
         def __init__(self, motor: 'RotationalMotor'):
             self.tag = motor.tag
@@ -2459,11 +2474,10 @@ class Connector(Device):
        break its current coupling, unless `unilateralUnlock` is false, and the other connector is still clinging on.
        `connector.is_locked` returns the connector's willingness to become locked to another connector."""
 
-    class PresenceSensor(Sensor, SurrogateValue, auto_link_wb_methods=False):
-        # this has idiosyncratically named wb_methods, so we define them here, and set auto_link to False above
+    class PresenceSensor(Sensor, SurrogateValue):
         _enable = wb.wb_connector_enable_presence
         _disable = wb.wb_connector_disable_presence
-        _get_sampling_period = wb.wb_connector_get_presence_sampling_period
+        _get_sampling = wb.wb_connector_get_presence_sampling_period
 
         def __init__(self, connector: 'Connector'):
             self.tag = connector.tag
