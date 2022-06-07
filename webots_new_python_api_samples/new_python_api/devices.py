@@ -1330,16 +1330,14 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
             return f"{self.camera}.recognition"
 
         def __len__(self) -> int:
-            # TODO or should this be len(self.value)??? Or just left to surrogate value to handle?
             return wb.wb_camera_recognition_get_number_of_objects(self.tag)
 
         class Object(ctypes.Structure):
             """A Camera.Recognition.Object is a ctypes structure that stores information about an object recognized
                by this camera.  Each Recognition.Object shares memory with the Webots simulation, which makes it
                quick to access select information, but makes each Object valid only for the current timestep.
-               If you will want to refer back back to a Recognition.Object's values later, you'll need to make a copy
-               of them this timestep while the object is still valid to use.
-               TODO provide copying mechanism?
+               If you will want to refer back back to a Recognition.Object's values later, you should copy wanted
+               attributes, or copy the whole Object with obj.copy(), while the Object is still valid to use.
                Returned attributes like obj.translation themselves do not share memory with Webots, so may be
                retained and used after the current timestep. (These attributes each have raw versions like
                obj._translation that are slightly faster to access, but are valid only in this timestep!)"""
@@ -1369,8 +1367,19 @@ class Camera(ImageContainer[ColorBGRA], Device, Sensor): # TODO should be ImageC
             _colors_ptr: Color3f_p
             _model: bytes
 
+            @descriptor(prioritized=False)  # In clones, the instance._colors attribute will take priority
             def _colors(self) -> Sequence[Color3f]:
                 return self._colors_ptr[:self._number_of_colors]
+
+            def copy(self) -> 'Camera.Recognition.Object':
+                """Returns a copy of this Recognition.Object.  Unlike originals, copies do not share memory with the
+                   Webots simulation and will continue to be valid to use after the current timestep."""
+                clone = Camera.Recognition.Object.from_buffer_copy(self)
+                # This copied ._colors_ptr and ._model that are still pointers to shared memory; need to copy them too
+                self_colors = self._colors
+                clone._colors = type(self_colors)(self_colors)
+                clone._model = self._model
+                return clone
 
             # --- Recognition.Object properties for ordinary users ---
 
