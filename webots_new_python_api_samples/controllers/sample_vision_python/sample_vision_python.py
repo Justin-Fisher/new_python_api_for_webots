@@ -161,6 +161,5 @@ while robot.step():
 
     # --- Process and display camera image ---
     filtered_image = process_image(camera, active_filters)
-    display.Image(filtered_image).paste_once(xy=(0, 0), blend=False)
-    # Using .paste_once automatically deletes the imported image after pasting, so it won't clutter Webots' memory
+    display.paste(filtered_image, xy=(0,0), blend=False)
 # end of main loop

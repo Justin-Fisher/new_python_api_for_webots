@@ -117,7 +117,7 @@ while robot.step(TIME_STEP):
         img_BGRA[...,2] = 0                          # leave red component 0, yielding cyan tone
 
     folded_BGRA[...] = thin_BGRA                     # broadcast the thin img_BGRA into the folded version of thick_BGRA
-    display.Image(thick_BGRA).paste_once()           # paste the unfolded version of this onto the display
+    display.paste(thick_BGRA)                        # paste the unfolded version of this onto the display
 
     # --- copy the cloud's point data to the visualization
     in_cloud = cloud * 0.98  # move the visualization slightly in to avoid colliding with seen objects

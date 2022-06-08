@@ -407,11 +407,6 @@ class Mouse(RobotPseudoSensor):
 
     # TODO XXX *** ??? can the mouse update between simulation steps??? If so, the caching I use here would be bad!!!
 
-    # TODO not sure I need this __init__
-    def __init__(self, sampling = True):
-        RobotPseudoSensor.__init__(self, sampling = sampling)
-        # TODO initialize dummy .value in case this gets read too soon
-
     class State( ctypes.Structure ):
         # declare fields for c_types conversion from C-API
         _fields_ = [('left',   c_bool ), ('middle', c_bool ), ('right',  c_bool ),
@@ -434,20 +429,17 @@ class Mouse(RobotPseudoSensor):
     last_cache_time = -1.0            # will store the latest simulation time when the cached ._value was uptodate
 
     wb.wb_mouse_get_state.restype = c_pointer(State)
-    @property
+    @timed_cached_property
     def value(self) -> 'Mouse.State':
         """A MouseState object that represents current left/right/middle, u/v, and x/y/z attributes of the mouse.
            It is generally preferable to access these directly, e.g., as mouse.left, rather than as mouse.value.left.
-           The position values are also compiled into Vectors mouse.pos2D and mouse.pos3D """
-        if self.last_cache_time < core_api.time:
-            self._value = Mouse.State.from_address( wb.wb_mouse_get_state() )
-            self.last_cache_time = core_api.time
-        return self._value
+           The position values are also compiled into Vectors mouse.uv and mouse.xyz"""
+        return Mouse.State.from_buffer_copy(wb.wb_mouse_get_state())
     @use_docstring_as_deprecation_warning
-    def getState(self) -> 'Mouse.State':
+    def getState(self) -> 'Mouse':
         """DEPRECATED: Mouse.getState() is deprecated. State attributes are now accessible directly as mouse.left,
            mouse.right, mouse.middle, mouse.uv, and mouse.xyz"""
-        return wb.wb_mouse_get_state()
+        return self
 
     # Rather than just making this a SurrogateValue, we define surrogate attributes for type-hints and docstrings
     @surrogate_attribute # this descriptor makes mouse.left return mouse.value.left; we provide type-hint and docstring
@@ -467,40 +459,45 @@ class Mouse(RobotPseudoSensor):
     @surrogate_attribute
     def z     (self) -> float: "Global z coordinate of the mouse cursor (if you've set mouse.xyz.sampling = True)"
 
-    class XYZ_Vector(Vector, SecondarySensor):
-        """A Vector representing the mouse position in 3D space, with an .sampling property that can be used to
-           read/adjust whether such mouse.xyz readings will be available or just NotaNumber(NaN). Requires first setting
-           robot.mouse.xyz.sampling = True since computing this position is somewhat computationally expensive."""
-
-        _enable = wb.wb_mouse_enable_3d_position
-        _disable = wb.wb_mouse_disable_3d_position
-        _get_sampling =  wb.wb_mouse_is_3d_position_enabled
-
-        # TODO think about whether this should be a new vector each time, or a surrogate vector, like other sensors?
-
     @property
     def uv(self)->Vector:
         """A vector representing the mouse 2D position in as fractions 0..1 across and down the simulation window."""
         return Vector(self.value.u, self.value.v)
 
-    @property
-    def xyz(self) -> XYZ_Vector:
-        """A Vector representing the mouse position in 3D space.  Requires first setting
-           robot.mouse.xyz.sampling = True since computing this position is somewhat computationally expensive."""
-        return Mouse.XYZ_Vector(self.value.x, self.value.y, self.value.z)
+    # --- mouse xyz 3D position ---
+
+    class XYZ_Sensor(SecondarySensor, VectorValue):
+        _enable = wb.wb_mouse_enable_3d_position
+        _disable = wb.wb_mouse_disable_3d_position
+        _get_sampling =  wb.wb_mouse_is_3d_position_enabled
+
+        @timed_cached_property
+        def value(self):
+            return Vector(self.value.x, self.value.y, self.value.z)
+
+    @cached_property
+    def xyz(self) -> XYZ_Sensor:
+        """robot.mouse.xyz returns a Mouse.XYZ_Sensor object that allows access to the mouse's 3D position.
+           Upon first reference to robot.mouse.xyz this will automatically be enabled to produce readings whenever
+           the mouse itself does, readable and adjustable via robot.mouse.sampling, either True or None.
+           robot.mouse.xyz.value returns the current reading, but for most purposes you can use mouse.xyz as a
+           surrogate for this value."""
+        xyz_sensor = Mouse.XYZ_Sensor()
+        xyz_sensor.sampling = True
+        return xyz_sensor
 
     @use_docstring_as_deprecation_warning
     def enable3dPosition(self):
         """DEPRECATED: Mouse.enable3dPosition() is deprecated.  Please use mouse.xyz.sampling = True"""
-        return wb.wb_mouse_enable_3d_position()
+        mouse.xyz.sampling = True
     @use_docstring_as_deprecation_warning
     def disable3dPosition(self):
         """DEPRECATED: Mouse.disable3dPosition() is deprecated.  Please use mouse.xyz.sampling = None"""
-        return wb.wb_mouse_disable_3d_position()
+        mouse.xyz.sampling = None
     @use_docstring_as_deprecation_warning
     def is3dPositionEnabled(self)->bool:
         """DEPRECATED: Mouse.is3dPositionEnabled() is deprecated.  Please use mouse.xyz.sampling"""
-        return wb.wb_mouse_is_3d_position_enabled()
+        return mouse.xyz.sampling
 
 
 # === RobotModule class (needed to enable robot.properties to work) ===

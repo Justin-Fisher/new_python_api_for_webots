@@ -299,6 +299,12 @@ class Sensor():
     # TODO: it could make sense to temporarily cache sensor .values so that repeated lookups during the same
     #       e.g. using timed_cached_properties
 
+    # The following are either explicitly defined in  subclasses or automatically set by __init_subclass__
+    _api_name: str           # e.g. 'distance_sensor'
+    _enable: Callable        # e.g. wb.wb_distance_sensor_enable
+    _disable: Callable       # e.g. wb.wb_distance_sensor_disable
+    _get_sampling: Callable  # e.g. wb.wb_distance_sensor_get_sampling_period
+
     def __init_subclass__(subclass, auto_link_wb_methods = True, **kwargs):
         """This will be called whenever a new subclass of Sensor is created below.
            Unless this subclass has already defined these itself, or sends auto_link_wb_methods = False,
@@ -334,7 +340,7 @@ class Sensor():
         return wb.wb_robot_get_basic_time_step()
 
     @property
-    def sampling(self) -> int:
+    def sampling(self) -> Union[int, bool]:
         """The current sampling period for this sensor, the number of milliseconds of simulated time it will take to
            generate each new sensor reading.  Can be read via sensor.sampling or adjusted via
            sensor.sampling = new_sampling_period.  Setting sensor.sampling = True enables that sensor using the
@@ -362,7 +368,7 @@ class Sensor():
         self._disable(*self._tag_if_needed)
 
     @use_docstring_as_deprecation_warning
-    def getSamplingPeriod(self) -> int:
+    def getSamplingPeriod(self) -> Union[int, bool]:
         """DEPRECATED: sensor.getSamplingPeriod() is deprecated. Please use sensor.sampling instead."""
         return self._get_sampling(*self._tag_if_needed)
 
@@ -1741,6 +1747,32 @@ class Lidar(ImageContainer[float], Device, Sensor):
         """DEPRECATED: Lidar.getMaxRange() is deprecated. Please use lidar.max_range instead."""
         return wb.wb_lidar_get_max_range(self.tag)
 
+    def color_image(self, min_range: float = ..., min_color=(  0,   0, 0, 255),
+                          max_range: float = ..., max_color=(255, 255, 0, 255)):
+        """Requires numpy. If numpy is not available, this raises an ImportError.
+           If numpy is available, this returns a numpy array with shape (height, width, 4) whose pixels are BGRA pixels
+           in a color representation of this device's current range image, suitable to paste onto a Webots display.
+           If min_ or max_range is not given, the device's own min_ and max_range will be used (treating infinity as 10).
+           Each pixel is linearly interpolated between min_color and max_color (BGRA, default black...cyan)."""
+        try:
+            import numpy as np
+        except ImportError:
+            raise ImportError("Computing .color_image requires numpy. Install with `pip install numpy`")
+
+        if min_range is ...: min_range = self.min_range
+        if max_range is ...: max_range = self.max_range
+        if max_range < 0 or max_range == float('inf'): max_range = 10
+        if len(min_color) == 3: min_color = tuple(min_color)+(255,) # add alpha channel if missing
+        if len(max_color) == 3: max_color = tuple(max_color)+(255,)
+
+        range1D = self.array.reshape(-1)  # range input viewed as a long 1D array of floats
+        # The following would be ideal, but Numpy won't accept colors as output points to interpolate between
+        # interp1D = np.interp(range1D, (min_range, max_range), (min_color, max_color), left=min_color, right=max_color)
+        # So we instead create an array of weights interpolated 0..1, and then use those to weight the colors
+        weights = np.interp(range1D, (min_range, max_range), (0, 1), left=0, right=1).reshape(-1, 1)
+        interp = weights * max_color + (1-weights) * min_color
+        return np.array(interp, dtype='B').reshape(self.height, self.width, 4)
+
     # --- Lidar range image deprecated conversions (replaced by ImageContainer superclass) ---
 
     @use_docstring_as_deprecation_warning
@@ -1791,7 +1823,7 @@ class Lidar(ImageContainer[float], Device, Sensor):
             time: float
 
             @property
-            def value(self) -> Vector:
+            def value(self) -> Vector[float]:
                 """The xyz vector information about this Point.
                    For most purposes, you can use each Point as a surrogate for this value."""
                 return Vector(self.x, self.y, self.z)
@@ -1833,6 +1865,49 @@ class Lidar(ImageContainer[float], Device, Sensor):
             import numpy as np
             width, height = wb.wb_lidar_get_horizontal_resolution(self.tag), wb.wb_lidar_get_number_of_layers(self.tag)
             return np.array(self.value, copy=False).view('<f4').reshape((height, width, 5))[:, :, :3]
+
+        def color_image(self, x_min: float = ..., x_max: float = ..., x_color=(255, 0, 0),
+                              y_min: float = ..., y_max: float = ..., y_color=(0, 0, 255),
+                              z_min: float = ..., z_max: float = ..., z_color=(0, 255, 0) ):
+            """Requires numpy. If numpy is not available, this raises an ImportError.
+               If numpy is available, this returns a numpy array with shape (height, width, 4) whose pixels are
+               BGRA pixels in a color representation of this lidar cloud.  If given, x_, y_ and z_color should
+               be additive BGR color components corresponding to the three lidar axes (default x=blue, y=red, z=green).
+               With these defualt colors, cloud points will be bluer the further ahead they are, redder the further
+               to the left they are, and greener the higher they are.  If the minima are zero, then closer points
+               will be darker.  If the minima are instead symmetrical with the maxima (e.g. full circle field of view)
+               closer points will appear a neutral gray (roughly midway between black minima and full maxima).
+               If axes' min and max values are not given, they will be estimated based on the lidar's range and fov.
+               Pixel components are linearly interpolated between black and the given color for each of x, y and z,
+               then added together."""
+            try:
+                import numpy as np
+            except ImportError:
+                raise ImportError("Computing .color_image requires numpy. Install with `pip install numpy`")
+
+            r = self.lidar.max_range
+            if x_max is ...: x_max = r
+            if self.lidar.frequency: # rotating lidar can see all x and y directions
+                if x_min is ...: x_min = -r
+                if y_max is ...: y_max =  r
+                if y_min is ...: y_min = -r
+            else:                    # stationary lidar's x and y limits are affected by field of view
+                if x_min is ...: x_min =  r * math.cos(min(1.5708, max(self.lidar.fov/2, self.lidar.vertical_fov/2)))
+                if y_max is ...: y_max =  r * math.sin(min(1.5708, self.lidar.fov/2))
+                if y_min is ...: y_min = -r * math.sin(min(1.5708, self.lidar.fov/2))
+            # Technically these z_values would be affected by the lidar's .tilt, but Webots doesn't offer access to that
+            if z_max is ...: z_max =  r * math.sin(min(1.5708, self.lidar.vertical_fov/2))
+            if z_min is ...: z_min = -r * math.sin(min(1.5708, self.lidar.vertical_fov/2))
+
+            xyz_1D = self.array.reshape(-1, 3)  # xyz_cloud as a long array of xyz triples
+            interp  = np.interp(xyz_1D[:,0], (x_min, x_max), (0, 1), left=0, right=1).reshape(-1,1) * x_color
+            interp += np.interp(xyz_1D[:,1], (y_min, y_max), (0, 1), left=0, right=1).reshape(-1,1) * y_color
+            interp += np.interp(xyz_1D[:,2], (z_min, z_max), (0, 1), left=0, right=1).reshape(-1,1) * z_color
+            out = np.zeros((self.height, self.width, 4), dtype='B')
+            out[...,3]=255 # set alpha to opaque
+            out[...,:3] = interp.reshape(self.height, self.width, 3)
+            return out
+
 
     @cached_property
     def cloud(self) -> Cloud:
@@ -1976,6 +2051,8 @@ class RangeFinder(ImageContainer[float], Device, Sensor):
     def getMaxRange(self) -> float:
         """DEPRECATED: RangeFinder.getMaxRange() is deprecated. Please use rangefinder.max_range instead."""
         return wb.wb_range_finder_get_max_range(self.tag)
+
+    color_image = Lidar.color_image  # RangeFinders and Lidars have equivalent color image arrays
 
     # ---RangeFinder deprecated value conversions (replaced by ImageContainer superclass)---
 
@@ -3869,6 +3946,30 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
     def __repr__(self):
         return f'Display("{self.name}")'
 
+    def __getitem__(self, item:Tuple[slice,slice]):
+        """`display[x1:x2, y1:y2] is a shorthand for self.image.copy(x1,y1, x2-x1,y2-y1), which creates an
+           Image on Webots' virtual clipboard that may then be pasted onto a display with img.paste().
+           Note: future versions may generalize this somewhat, hopefully preserving most likely uses."""
+        x,y = item if isinstance(item, tuple) else (item, ...)
+
+        if isinstance(x,int):
+            x1, width = x,1
+        elif x is ... or x == slice(None,None,None):
+            x1, width = 0, self.width
+        else:
+            x1, x2 = x.start or 0, x.stop or self.width
+            width = x2 - x1
+
+        if isinstance(y,int):
+            y1, height = y,1
+        elif y is ... or y == slice(None,None,None):
+            y1, height = 0, self.height
+        else:
+            y1, y2 = y.start or 0, y.stop or self.height
+            height = y2 - y1
+
+        return self.image.copy(x1,y1, width,height)
+
     def full_offset(self, display=None):
         """Overwrites the more complicated Brush.full_offset, which computes how far left/right and up/down to offset
            drawn items. For displays, full_offset just is offset, since there are no brush superclasses to factor in."""
@@ -3995,11 +4096,11 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
 
     # --- display copy/pasting images ---
 
-    class ImageRef(c_void_p):
-        display: 'Display'  # the display that this image will paste to by default; set by Display.Image()
+    class Image(c_void_p):
+        display: 'Display'  # the display that this image will paste to by default; set by Display.image()
 
         # To avoid confusion with nearby uses of `self` meaning this Display, we use `img` in place of `self` here
-        def __repr__(img): return f"ImageRef({img.value})"
+        def __repr__(img): return f"Display.Image({img.value})"
 
         def paste(img, xy:Sequence[int] = (0, 0), blend:bool = True, display:'Display' = None):
             """Pastes this image onto display, if given, or this image's own .display (the one it was created from)
@@ -4007,32 +4108,28 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
             if display is None: display = img.display
             wb.wb_display_image_paste(display.tag, img, int(xy[0]), int(xy[1]), c_bool(blend))
 
-        def paste_once(img, xy:Sequence[int] = (0, 0), blend:bool = True, display:'Display' = None):
-            """A convenience combination of image.paste() and image.delete(), useful for images that will be used
-               just once and needn't be retained after. This enables convenient shorthand like
-               `display.Image(myarray).paste_once(xy)` with no need to create a local name for the image nor to
-               delete it in a separate line."""
-            img.paste(xy, blend, display)
-            img.delete()
-
         def save(img, filename: str):
             return wb.wb_display_image_save(img.display.tag, img, filename.encode())
 
-        def delete(img):
-            return wb.wb_display_image_delete(img.display.tag, img)
-    # Now that the ImageRef class is defined, we can declare restypes for wb_methods that return ImageRef's
-    wb.wb_display_image_new.restype = ImageRef
-    wb.wb_display_image_copy.restype = ImageRef
-    wb.wb_display_image_load.restype = ImageRef
+        def __del__(img):
+            """This will automatically be called when Python garbage-collects your last reference to this image.
+               This tells Webots not to bother to continue retaining a copy of this image in its virtual clipboard."""
+            if 'has_been_deleted' not in img.__dict__:
+                wb.wb_display_image_delete(img.display.tag, img)
+                img.has_been_deleted = True
+
+    # Now that the Image class is defined, we can declare restypes for wb_methods that return Images
+    wb.wb_display_image_new.restype = Image
+    wb.wb_display_image_copy.restype = Image
+    wb.wb_display_image_load.restype = Image
 
     class ImageCreator:
         def __init__(self, display:'Display'):
-            self.display = display  # the display that this image will paste to by default; set by Display.Image()
+            self.display = display  # the display that this image will paste to by default; set by Display.image()
 
         # To avoid confusion with nearby uses of self, we use `creator` in place of `self` here
-        # These are classmethods, as they will typically be called via `display.Image.foo(...)` to create an instance
-        def new(creator, data: Union[Sequence[float], Sequence[Iterable4f], Sequence[Sequence[Iterable4f]]],
-                         format: int = WB_IMAGE_BGRA, width: int = None, height: int = None, range=255) -> 'ImageRef':
+        def new(creator, data: Union[Sequence[int], Sequence[Sequence[int]], Sequence[Sequence[Sequence[int]]]],
+                         format: int = WB_IMAGE_BGRA, width: int = None, height: int = None, range=255) -> 'Image':
             """Passes into Webots the data for a new image that can then be pasted onto a Display, and returns
                a Display.Image object whose methods like .paste and .save will use the imported image data.
                This will be fastest if the given data is a NumPy array, opencv Mat, PIL, or other object
@@ -4046,6 +4143,15 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
                `range` indicates the maximum value of each color component in the given data, either 1 for colors
                represented as floats ranging 0..1, 255 for bytes (the fastest format) TODO or allow 2**24 and 2**32?
                """
+            if isinstance(data, ImageContainer):
+                if hasattr(data, 'color_image'):
+                    data = data.color_image()
+                elif data.pixel_type is ColorBGRA:
+                    height, width = data.shape
+                    data = data.value
+                else:
+                    raise NotImplementedError(f"{data} does not contain a ColorBGRA image, and has no .color_image() "
+                                              f"method, so cannot directly be pasted to {creator.display}")
             if isinstance(data, bytes):
                 # TODO use missing ones of width, height to infer the others
                 # TODO create copy in ctypes
@@ -4111,29 +4217,27 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
                 return wb.wb_display_image_new(width, height, data, format)
         __call__ = new
 
-        @classmethod
-        def copy(creator, *corner_and_size: Union[int, Sequence[int]])  -> 'ImageRef':
-            """`display.Image.copy() creates an image by copying from a region of this display."""
+        def copy(creator, *corner_and_size: Union[int, Sequence[int]])  -> 'Image':
+            """`display.image.copy() creates an image by copying from a region of this display."""
             corner, size = creator.display.generate_points_from(corner_and_size)
             img = wb.wb_display_image_copy(creator.device.tag, int(corner.x), int(corner.y), int(size.x), int(size.y))
             img.display = creator.display  # Let this image know what display created it
             return img
 
-        @classmethod
-        def load(creator, filename: str)  -> 'ImageRef':
-            """`display.Image.load(filename) loads a new image from a file."""
+        def load(creator, filename: str)  -> 'Image':
+            """`display.image.load(filename) loads a new image from a file."""
             img = wb.wb_display_image_load(creator.display.tag, filename.encode())
             img.display = creator.display  # Let this image know what display created it
             return img
 
     @cached_property
-    def Image(self) -> ImageCreator:
+    def image(self) -> ImageCreator:
         """Returns a Display.ImageCreator object tied to this particular Display by default. This ImageCreator
            can be used to create new Display.Image objects which can then be pasted onto a display.
-           `display.Image(data, format, width, height, range)` or equivalently `display.Image.new(...)` can be
+           `display.image(data, format, width, height, range)` or equivalently `display.image.new(...)` can be
            used to import a raw image into Webots, e.g. from a Numpy array or nested list of color values.
-           `display.Image.copy() creates an image by copying from a region of this display.
-           `display.Image.load(filename) loads a new image from a file.
+           `display.image.copy()` and `display[x1:x2, y1:y2]` create an Image by copying from a region of this display.
+           `display.image.load(filename) loads a new image from a file.
            Whichever way such an image is created:
            `img.paste(xy, blend, [display])` pastes that image back as location `xy` in the given `display` (which
             defaults to being the display from which the image was created) perhaps blending with existing pixels.
@@ -4141,37 +4245,52 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
            `img.delete()` tells webots to free up the memory it had been using to store this image."""
         return Display.ImageCreator(self)
 
+    def paste(self, source, xy:Sequence[int] = (0, 0), blend:bool = True,
+                    format: int = WB_IMAGE_BGRA, width: int = None, height: int = None, range=255 ):
+            """A convenience method for (1) creating an Image with display.image(source, format, widtch, height, range)
+               if source is not already an Image, (2) pasting that image onto this display at position xy with the given
+               blend option, and then (3) letting Webots revert its virtual clipboard to as it was before (i.e. removing
+               this Image from it if it wasn't there already).
+               If you want to paste an image multiple times, it will be more efficient to add that image to the
+               virtual clipboard just once with `img = Display.image(source)` and then to paste it with img.paste().
+               It will automatically be removed from the clipboard once you no longer retain any references to it."""
+            if isinstance(source, Display.Image):
+                source.paste(xy=xy, blend=blend, display=self)
+            else:
+                self.image(source, format=format, width=width, height=height, range=range).paste(xy, blend)
+                # Python garbage collection will trigger __del__ method to remove this from webots clipboard
+
     @use_docstring_as_deprecation_warning
     def imageNew(self, data: Union[Sequence[float],Sequence[Iterable4f],Sequence[Sequence[Iterable4f]]],
-                       format: int = RGBA, width: int = None, height: int = None) -> ImageRef:
-        """DEPRECATED. Display.imageNew() is deprecated. Please use display.Image() instead."""
+                       format: int = RGBA, width: int = None, height: int = None) -> Image:
+        """DEPRECATED. Display.imageNew() is deprecated. Please use display.image() instead."""
         return self.image_new(data, format, width, height)
 
     @use_docstring_as_deprecation_warning
-    def imageLoad(self, filename: str) -> ImageRef:
-        """DEPRECATED. Display.imageLoad(filename) is deprecated. Please use display.Image.load(filename) instead."""
-        return self.Image.load(filename)
+    def imageLoad(self, filename: str) -> Image:
+        """DEPRECATED. Display.imageLoad(filename) is deprecated. Please use display.image(filename) instead."""
+        return self.image(filename)
 
     @use_docstring_as_deprecation_warning
-    def imageCopy(self, x: int, y: int, width: int, height: int) -> ImageRef:
-        """DEPRECATED. Display.imageCopy() is deprecated. Please use display.Image.copy() instead."""
+    def imageCopy(self, x: int, y: int, width: int, height: int) -> Image:
+        """DEPRECATED. Display.imageCopy() is deprecated. Please use display.image.copy() or display[x1:x2, y1:y2]."""
         wb.wb_display_image_copy(self.tag, x, y, width, height)
 
     @use_docstring_as_deprecation_warning
-    def imagePaste(self, ir: ImageRef, x: int, y: int, blend: bool = False):
+    def imagePaste(self, ir: Image, x: int, y: int, blend: bool = False):
         """DEPRECATED. Display.imagePaste(img, x, y, blend) is deprecated. Please use img.paste((x, y), blend, display)
            though blend will default to False, and display will default to the display used to create the image."""
-        """DEPRECATED: Display.imagePaste(ir, x, y, blend) is deprecated. Use display.image_paste(ir, (x, y), blend)"""
         ir.paste((x, y), blend, self)
 
     @use_docstring_as_deprecation_warning
-    def imageSave(self, ir: ImageRef, filename: str):
+    def imageSave(self, ir: Image, filename: str):
         """DEPRECATED. Display.imageSave(img, filename) is deprecated. Please use img.save(filename) instead."""
         return ir.save(filename)
 
     @use_docstring_as_deprecation_warning
-    def imageDelete(self, ir: ImageRef):
-        """DEPRECATED. Display.imageDelete(img) is deprecated. Please use img.delete() instead."""
+    def imageDelete(self, ir: Image):
+        """DEPRECATED. Display.imageDelete(img) is deprecated. Python garbage-collection will now automatically inform
+           Webots that it needn't retain a copy of an Image once you no longer retain any references to it."""
         return wb.wb_display_image_delete(self.tag, ir)
 
 

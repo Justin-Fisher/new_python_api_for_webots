@@ -46,22 +46,7 @@ lidar = robot.Lidar()
 lidar.cloud.sampling = True  # now we can access point-cloud readings as well as basic range images
 
 display = robot.Display()
-
-# Create arrays in which we'll build the images to show on the display
-img_BGRA = np.zeros((lidar.height, lidar.width, 4), dtype='B')
-img_BGRA[:,:,3]=255  # set alpha layer to be opaque
-cloud_xzy = np.zeros((lidar.height, lidar.width, 3), dtype='<f4')  # colorful image looks better with x=blue, z=green, y=red
-cloud_BGRA = img_BGRA.copy()
-thickness = display.height // lidar.height  # how many vertical pixels each lidar pixel will occupy on display
-thick_BGRA = np.zeros((thickness * lidar.height, lidar.width, 4), dtype='B')
-# another view of thick_BGRA, now projecting its thickness into a 4th dimension; easier to broadcast "thin" image into
-folded_BGRA = thick_BGRA.reshape(lidar.height, thickness, lidar.width, 4)
-thin_BGRA = img_BGRA.reshape(lidar.height, 1, lidar.width, 4)  # another view of img_BGRA, broadcastable onto folded_BGRA
-
-print(f"{cloud_xzy.shape=}")
-print(f"{img_BGRA.shape=}")
-print(f"{folded_BGRA.shape=}")
-print(f"{thick_BGRA.shape=}")
+stretch = display.height // lidar.height  # how many vertical pixels each lidar pixel will occupy to fill display
 
 print_readings = False
 print("Tap P to toggle printing of the closest distances on left and right, which largely drive the robot's decisions.")
@@ -76,29 +61,18 @@ while robot.step(TIME_STEP):
     if 'C' in robot.keyboard.pressed:  # tapping C toggles whether display shows colorful cloud or drab range
         display_cloud = not display_cloud
 
+    # --- Display Lidar readings on a Webots display ---
+    if display_cloud:  # colorful cloud image
+        img_BGRA = lidar.cloud.color_image(x_min = -5, x_max = 6, y_min = -5, y_max = 6, z_min=-1, z_max=4,
+                                           x_color = (255,0,0), y_color=(0,0,255), z_color=(0,255,0))
+    else:
+        img_BGRA = lidar.color_image(min_color=(0,0,0), max_color=(255,255,50))
+    # This lidar has 6 layers, but a 6-pixel-tall image would be hard to view, so we'll stretch it vertically
+    display.paste(img_BGRA.repeat(stretch, axis=0))
+
     # --- read the Lidar's range image into a numpy array ---
 
     img_f = lidar.array   # floats ranging 0..8; arranged in 6 rows of 256 ringing robot, from straight ahead->clockwise
-
-    # --- present Lidar readings on a Webots display ---
-    if display_cloud:
-        input = lidar.cloud.array   # shape (height x width x 3): floats indicating x,y,z coords of each seen point
-        cloud_xzy[...,0] = input[...,0]     # keep the x/forwards/0 input at the blue/0 position
-        cloud_xzy[...,1] = input[...,2]*6-2 # shift the z/up/2 input to the green/1 position, transform since world is quite flat
-        cloud_xzy[...,2] = input[...,1]     # shift the y/left/1 input to the red/2 position
-        # cloud_xzy = np.nan_to_num(cloud_xzy, copy=False, nan = 4.9, posinf=4.9, neginf=-4.9)
-        cloud_xzy.clip(-4.9,4.9, cloud_xzy) # ensure that all are in nominal range (esp. occasional infinities!)
-        cloud_b = np.array((cloud_xzy+5)*(255/11), dtype='B')  # convert to bytes ranging 0..255
-        img_BGRA[:,:,:3] = cloud_b                             # copy into the BGR part of img_BGRA
-    else:
-        # This uses img_f created above
-        img_b = np.array(img_f*(255/8), dtype='B')   # bytes ranging 0..255
-        img_BGRA[...,0] = img_b                      # copy range info onto Blue channel
-        img_BGRA[...,1] = img_b                      # copy range info onto Green channel as well
-        img_BGRA[...,2] = 0                          # leave red component 0, yielding cyan tone
-
-    folded_BGRA[...] = thin_BGRA                     # broadcast the thin img_BGRA into the folded version of thick_BGRA
-    display.Image(thick_BGRA).paste_once()           # paste the unfolded version of this onto the display
 
     # --- use Lidar range readings for wayfinding---
     # Flatten 6 layers of range readings into one, for simplicity; we take the min since Lidar sees over some blocks
