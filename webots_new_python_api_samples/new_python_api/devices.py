@@ -3946,30 +3946,6 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
     def __repr__(self):
         return f'Display("{self.name}")'
 
-    def __getitem__(self, item:Tuple[slice,slice]):
-        """`display[x1:x2, y1:y2] is a shorthand for self.image.copy(x1,y1, x2-x1,y2-y1), which creates an
-           Image on Webots' virtual clipboard that may then be pasted onto a display with img.paste().
-           Note: future versions may generalize this somewhat, hopefully preserving most likely uses."""
-        x,y = item if isinstance(item, tuple) else (item, ...)
-
-        if isinstance(x,int):
-            x1, width = x,1
-        elif x is ... or x == slice(None,None,None):
-            x1, width = 0, self.width
-        else:
-            x1, x2 = x.start or 0, x.stop or self.width
-            width = x2 - x1
-
-        if isinstance(y,int):
-            y1, height = y,1
-        elif y is ... or y == slice(None,None,None):
-            y1, height = 0, self.height
-        else:
-            y1, y2 = y.start or 0, y.stop or self.height
-            height = y2 - y1
-
-        return self.image.copy(x1,y1, width,height)
-
     def full_offset(self, display=None):
         """Overwrites the more complicated Brush.full_offset, which computes how far left/right and up/down to offset
            drawn items. For displays, full_offset just is offset, since there are no brush superclasses to factor in."""
@@ -4112,157 +4088,167 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
             return wb.wb_display_image_save(img.display.tag, img, filename.encode())
 
         def __del__(img):
-            """This will automatically be called when Python garbage-collects your last reference to this image.
-               This tells Webots not to bother to continue retaining a copy of this image in its virtual clipboard."""
+            """This will automatically be called when Python garbage-collects the last Python reference to this image.
+               This tells Webots not to continue cluttering its virtual clipboard with a copy of this image."""
             if 'has_been_deleted' not in img.__dict__:
                 wb.wb_display_image_delete(img.display.tag, img)
                 img.has_been_deleted = True
 
-    # Now that the Image class is defined, we can declare restypes for wb_methods that return Images
-    wb.wb_display_image_new.restype = Image
-    wb.wb_display_image_copy.restype = Image
-    wb.wb_display_image_load.restype = Image
-
-    class ImageCreator:
-        def __init__(self, display:'Display'):
-            self.display = display  # the display that this image will paste to by default; set by Display.image()
-
-        # To avoid confusion with nearby uses of self, we use `creator` in place of `self` here
-        def new(creator, data: Union[Sequence[int], Sequence[Sequence[int]], Sequence[Sequence[Sequence[int]]]],
-                         format: int = WB_IMAGE_BGRA, width: int = None, height: int = None, range=255) -> 'Image':
-            """Passes into Webots the data for a new image that can then be pasted onto a Display, and returns
-               a Display.Image object whose methods like .paste and .save will use the imported image data.
-               This will be fastest if the given data is a NumPy array, opencv Mat, PIL, or other object
-               with Python's buffer protocol, with each color component occupying one byte.
-               TODO  Alternatively the data may be given as a sequence or nested sequence to be traversed depth-first.
-               If height and width are not given, they will be automatically inferred from the buffer protocol,
-               or from the first and second dimensions of nested sequences, or a TypeError will be raised.
-               Width and height can be automatically inferred from the buffer protocol or nested sequence structure.
-               `format` should be something like Display.BGRA (Webots' default and fastest) indicating what order
-               the red, green, blue and (optional) alpha components have in each pixel.
-               `range` indicates the maximum value of each color component in the given data, either 1 for colors
-               represented as floats ranging 0..1, 255 for bytes (the fastest format) TODO or allow 2**24 and 2**32?
-               """
-            if isinstance(data, ImageContainer):
-                if hasattr(data, 'color_image'):
-                    data = data.color_image()
-                elif data.pixel_type is ColorBGRA:
-                    height, width = data.shape
-                    data = data.value
-                else:
-                    raise NotImplementedError(f"{data} does not contain a ColorBGRA image, and has no .color_image() "
-                                              f"method, so cannot directly be pasted to {creator.display}")
-            if isinstance(data, bytes):
-                # TODO use missing ones of width, height to infer the others
-                # TODO create copy in ctypes
-                # TODO send it in
-                raise NotImplementedError
-            # If missing width or height, first try to see if this object supports Python's buffer protocol
-            if width is None or height is None:
-                try:
-                    mview = memoryview(data)
-                except TypeError:  # sadly, it must not support the buffer protocol
-                    mview = None
-
-                if mview is not None:
-                    if mview.ndim == 3:
-                        height, width, comps = mview.shape
-                    elif mview.ndim == 2:  # Ambiguous between long 1D list of 1D pixels, and 2D array of 0D ints
-                        pass  # TODO could probably infer it in some cases
-                    else:
-                        pass  # TODO could probably infer it in some cases
-
-            if width is None or height is None:
-                l1 = len(data)
-
-            # Now that we have width and height settled, can create a pointer to the data
-
-            # TODO should probably confirm that the buffer contains bytes rather than some other data?
-
-            # First we'll try to use Python's buffer protocol to share memory with a buffer (e.g. numpy array)
-            try:
-                ptr = c_ubyte.from_buffer(data)
-            except TypeError:  # oops, it must not have the buffer protocol after all
-                ptr = None
-
-            if ptr is not None:  # we successfully got a pointer via the buffer protocol
-                img = wb.wb_display_image_new(creator.display.tag, int(width), int(height), ctypes.byref(ptr), format)
-                img.display = creator.display  # Let this image know what display it was created from
-                return img
-
-            # Otherwise, we need to construct the data ourselves
-
-            raise NotImplementedError  # TODO extraction of data from sequences is not finished
-
-            def traverse(clump: Iterable) -> Iterable[float]:
-                """Simple function to recursively unpack all the floats out of a nested structure, assuming that each
-                   clump is non-empty, and that the type of its first element is representative of the rest of the clump."""
-                if isinstance(clump[0], (int, float)):
-                    yield from clump
-                else:
-                    for subclump in clump:
-                        yield from subclump
-
-            data = tuple(traverse(data))
-            n = len(data)
-            # TODO for type RGB, does the data come in triples or quadruples?
-            if width is None and height is None: pass  # TODO XXX
-
-            if width is None: pass  # TODO XXX
-            if isinstance(data, list):
-                return wb.wb_display_image_new(len(data), len(data[0]), data, format)
-            elif width is None or height is None:
-                raise TypeError('imageNew : width and height must be given if data is not a list')
+    @staticmethod
+    def _flatten_image_data(clump: Iterable, range=255) -> Iterable[int]:
+        """Recursively unpacks all numbers out of a perhaps-nested sequence, renormalizing
+           each from 0..range to ints ranging 0..255.  Used to create Images from nested sequences."""
+        for item in clump:
+            if isinstance(item, Sequence):
+                yield from Display.flatten(item, range)
             else:
-                return wb.wb_display_image_new(width, height, data, format)
-        __call__ = new
+                if range == 255:
+                    yield int(item)
+                else:
+                    yield int(255 * item / range)
 
-        def copy(creator, *corner_and_size: Union[int, Sequence[int]])  -> 'Image':
-            """`display.image.copy() creates an image by copying from a region of this display."""
-            corner, size = creator.display.generate_points_from(corner_and_size)
-            img = wb.wb_display_image_copy(creator.device.tag, int(corner.x), int(corner.y), int(size.x), int(size.y))
-            img.display = creator.display  # Let this image know what display created it
-            return img
+    wb.wb_display_image_new.restype = Image
+    wb.wb_display_image_load.restype = Image
+    ImageDataType = Union[str, bytes, Sequence[float], Sequence[Sequence[float]], Sequence[Sequence[Sequence[float]]]]
 
-        def load(creator, filename: str)  -> 'Image':
-            """`display.image.load(filename) loads a new image from a file."""
-            img = wb.wb_display_image_load(creator.display.tag, filename.encode())
-            img.display = creator.display  # Let this image know what display created it
-            return img
-
-    @cached_property
-    def image(self) -> ImageCreator:
-        """Returns a Display.ImageCreator object tied to this particular Display by default. This ImageCreator
-           can be used to create new Display.Image objects which can then be pasted onto a display.
-           `display.image(data, format, width, height, range)` or equivalently `display.image.new(...)` can be
-           used to import a raw image into Webots, e.g. from a Numpy array or nested list of color values.
-           `display.image.copy()` and `display[x1:x2, y1:y2]` create an Image by copying from a region of this display.
-           `display.image.load(filename) loads a new image from a file.
-           Whichever way such an image is created:
-           `img.paste(xy, blend, [display])` pastes that image back as location `xy` in the given `display` (which
+    def image(self, data: ImageDataType, format: int = BGRA, width: int = ..., height: int = ..., range=255) -> Image:
+        """Passes into Webots' virtual clipboard the data for a new image that can then be pasted onto a Display, and
+           returns a Display.Image object whose methods like .paste and .save will use this imported image data.
+           This will be fastest if the given data is bytes, bytearray, NumPy array, opencv Mat, PIL, or other
+           object with Python's buffer protocol, with each color component occupying one byte.
+           Alternatively the data may be given as a filename to load (e.g. "pic.jpg") or as a sequence
+           or nested sequence of values ranging from 0 to the given `range`, to be traversed depth-first.
+           If height and/or width are not given, they will be automatically inferred from the buffer protocol,
+           or from the first and second dimensions of nested sequences, or a TypeError will be raised.
+           `format` should be something like Display.BGRA (Webots' default and fastest) indicating what order
+           the Blue, Green, Red and (optional) Alpha components will have in each pixel.
+           `range` indicates the maximum value of each color component in sequential (non-buffer) data, either 1
+           for colors represented as floats ranging 0..1, or 255 for byte-like ints, TODO or allow 2**24 and 2**32?
+           `display[x1:x2, y1:y2]` creates an Image by copying from a region of this display.
+           Whichever way such an Image is created:
+           `img.paste(xy, blend, [display])` pastes that image at location `xy` in the given `display` (which
             defaults to being the display from which the image was created) perhaps blending with existing pixels.
            `img.save(filename)` saves this image to a file.
-           `img.delete()` tells webots to free up the memory it had been using to store this image."""
-        return Display.ImageCreator(self)
+           When python garbage-collects your last reference to an Image, the python controller will automatically
+           inform Webots that it needn't clutter its virtual clipboard with a copy of this image any more."""
 
-    def paste(self, source, xy:Sequence[int] = (0, 0), blend:bool = True,
-                    format: int = WB_IMAGE_BGRA, width: int = None, height: int = None, range=255 ):
-            """A convenience method for (1) creating an Image with display.image(source, format, widtch, height, range)
-               if source is not already an Image, (2) pasting that image onto this display at position xy with the given
-               blend option, and then (3) letting Webots revert its virtual clipboard to as it was before (i.e. removing
-               this Image from it if it wasn't there already).
-               If you want to paste an image multiple times, it will be more efficient to add that image to the
-               virtual clipboard just once with `img = Display.image(source)` and then to paste it with img.paste().
-               It will automatically be removed from the clipboard once you no longer retain any references to it."""
-            if isinstance(source, Display.Image):
-                source.paste(xy=xy, blend=blend, display=self)
+        if isinstance(data, str):  # e.g. display.image("img.jpg")
+            img = wb.wb_display_image_load(self.tag, data.encode())
+            img.display = self
+            return img
+
+        if isinstance(data, ImageContainer):  # e.g. display.image(camera) or display.image(lidar)
+            if hasattr(data, 'color_image'):  # includes rangefinder, lidar, lidar.cloud
+                data = data.color_image()
+            elif data.pixel_type is ColorBGRA:  # includes camera, camera.recognition.image
+                height, width = data.shape
+                data = data.value
             else:
-                self.image(source, format=format, width=width, height=height, range=range).paste(xy, blend)
-                # Python garbage collection will trigger __del__ method to remove this from webots clipboard
+                raise TypeError(f"{data} does not contain a ColorBGRA image, and has no .color_image() "
+                                f"method, so cannot directly be pasted to {self}")
+
+        try:  # Our preferred way of accessing data would be via Python's Buffer Protocol, which memoryview engages
+            mview = memoryview(data)
+        except TypeError:  # If that fails, that means that, sadly, it must not support the buffer protocol
+            mview = None
+
+        if width is ... or height is ...:
+            area = ...   # will be set to width * height, if we discover what that is
+            comps = ...  # if 1, color components are combined in single big int; if 4 they are separated
+
+            if mview is not None:  # The buffer protocol often specifies height and width for us
+                if mview.ndim == 3:  # 3D buffer is assumed to be rows of pixels of components
+                    height, width, comps = mview.shape
+                elif mview.ndim == 2:  # 2D buffer could be long 1D list of 1D pixels, or 2D array of 0D ints
+                    if mview.itemsize == 1:  # Must be long 1D list of pixels of component bytes
+                        area, comps = mview.shape
+                    elif mview.itemsize == 4:  # Must be 2D array of unified 4-byte pixels
+                        height, width = mview.shape
+                        comps = 4
+                elif mview.ndim == 1:  # 1D buffer must be long list of either components or unified pixels
+                    comps = 4 / mview.itemsize
+                    area = mview.nbytes / 4
+                # Otherwise its ambiguous (if not incoherent!) what size this buffer of raw data is supposed to have
+            else:  # No buffer protocol to use, so we must just inspect sequence lengths to infer sizes
+                length0 = len(data)
+                length1 = len(data[0]) if isinstance(data[0], Sequence) else None
+                if length1:  # If we are given nested sequences, we assume they are rows of pixels
+                    height, width = length0, length1
+                    comps = len(data[0][0]) if isinstance(data[0][0], Sequence) else 1
+                else:  # If given raw 1D list, only legal possibility is long list of unified pixels
+                    area, comps = length0, 1
+
+            # If we haven't gotten width or height yet, the other and area suffice to determine the missing one
+            if width is ... and height is not ... and area is not ...: width = area / height
+            if height is ... and width is not ... and area is not ...: height = area / width
+            if width is ... or height is ...:
+                raise TypeError("Display.image() was unable to infer width and/or height from the given data.")
+
+        # We give Python bytes objects special handling since they are read-only, so would resist our approach below.
+        # We trust Webots to simply read the sent data, so we use cast() to create a pointer to bytes' own content
+        if isinstance(data, bytes):
+            ptr = ctypes.cast(data, c_ubyte_p)  # create a pointer to bytes' own buffer
+            img = wb.wb_display_image_new(self.tag, int(width), int(height), ptr, format)
+            img.display = self
+            return img
+
+        # Otherwise, we need to get the data into a c-contiguous buffer (if it isn't already)
+        if mview is not None:  # If it was already a buffer, all we need is to ensure that it is c-contiguous
+            if not mview.c_contiguous:  data = bytearray(data)  # copy non-contiguous data to contiguous bytearray
+        else:  # Otherwise, if the given data was not yet a buffer, we flatten the (nested) sequence(s) into a bytearray
+            data = bytearray(Display._flatten_image_data(data, range))
+
+        # Now that we know width and height and have an appropriate buffer of data, we can create the Image!
+        first = c_ubyte.from_buffer(data)  # create a single c_ubyte sharing memory with start of buffer
+        img = wb.wb_display_image_new(self.tag, int(width), int(height), ctypes.byref(first), format)
+        img.display = self
+        return img
+
+    wb.wb_display_image_copy.restype = Image
+    def __getitem__(self, item:Tuple[slice,slice]):
+        """`display[x1:x2, y1:y2] is a shorthand for self.image.copy(x1,y1, x2-x1,y2-y1), which creates an
+           Image on Webots' virtual clipboard that may then be pasted onto a display with img.paste().
+           Note: future versions may generalize this somewhat, hopefully preserving most likely uses."""
+        x,y = item if isinstance(item, tuple) else (item, ...)  # if only x index was given, use ... for y
+
+        if isinstance(x,int):                            # display[x, whatever]
+            x1, width = x,1
+        elif x is ... or x == slice(None,None,None):     # display[..., whatever] or display[:, whatever]
+            x1, width = 0, self.width
+        else:                                            # display[x1:x2, whatever]
+            x1, x2 = x.start or 0, x.stop or self.width
+            width = x2 - x1
+
+        if isinstance(y,int):                            # display[whatever, y]
+            y1, height = y,1
+        elif y is ... or y == slice(None,None,None):     # display[whatever, ...] or display[whatever,:]
+            y1, height = 0, self.height
+        else:                                            # display[whatever, y1:y2]
+            y1, y2 = y.start or 0, y.stop or self.height
+            height = y2 - y1
+
+        img = wb.wb_display_image_copy(self.tag, int(x1), int(y1), int(width), int(height))
+        img.display = self
+        return img
+
+    def paste(self, source: Union[Image, ImageDataType], xy:Sequence[int] = (0, 0), blend:bool = True,
+                    format: int = BGRA, width: int = ..., height: int = ..., range=255 ):
+        """A convenience method for (1) creating an Image with display.image(source, format, width, height, range)
+           if source is not already an Image, (2) pasting that image onto this display at position xy with the given
+           blend option, and then (3) letting Webots revert its virtual clipboard to as it was before (i.e. removing
+           this Image from it if it wasn't there already).
+           If you want to paste an image multiple times, it will be more efficient to add that image to the
+           virtual clipboard just once with `img = Display.image(source)` and then to paste it with img.paste().
+           It will automatically be removed from the clipboard once you no longer retain any references to it."""
+        if not isinstance(source, Display.Image):
+            source = self.image(source, format=format, width=width, height=height, range=range)
+        wb.wb_display_image_paste(self.tag, source, int(xy[0]), int(xy[1]), c_bool(blend))
+        # If we just created the Image, Python garbage collection will now trigger __del__ to remove it from clipboard
+
+    # --- Deprecated Display image handling ---
 
     @use_docstring_as_deprecation_warning
-    def imageNew(self, data: Union[Sequence[float],Sequence[Iterable4f],Sequence[Sequence[Iterable4f]]],
-                       format: int = RGBA, width: int = None, height: int = None) -> Image:
+    def imageNew(self, data: ImageDataType, format: int = RGBA, width: int = None, height: int = None) -> Image:
         """DEPRECATED. Display.imageNew() is deprecated. Please use display.image() instead."""
         return self.image_new(data, format, width, height)
 
@@ -4273,19 +4259,19 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
 
     @use_docstring_as_deprecation_warning
     def imageCopy(self, x: int, y: int, width: int, height: int) -> Image:
-        """DEPRECATED. Display.imageCopy() is deprecated. Please use display.image.copy() or display[x1:x2, y1:y2]."""
-        wb.wb_display_image_copy(self.tag, x, y, width, height)
+        """DEPRECATED. Display.imageCopy() is deprecated. Please use display[x:x+width, y:y+height] instead."""
+        return self[x:x+width, y:y+height]
 
     @use_docstring_as_deprecation_warning
-    def imagePaste(self, ir: Image, x: int, y: int, blend: bool = False):
+    def imagePaste(self, img: Image, x: int, y: int, blend: bool = False):
         """DEPRECATED. Display.imagePaste(img, x, y, blend) is deprecated. Please use img.paste((x, y), blend, display)
-           though blend will default to False, and display will default to the display used to create the image."""
-        ir.paste((x, y), blend, self)
+           or display.paste(img, (x,y), blend)"""
+        img.paste((x, y), blend, self)
 
     @use_docstring_as_deprecation_warning
-    def imageSave(self, ir: Image, filename: str):
+    def imageSave(self, img: Image, filename: str):
         """DEPRECATED. Display.imageSave(img, filename) is deprecated. Please use img.save(filename) instead."""
-        return ir.save(filename)
+        return img.save(filename)
 
     @use_docstring_as_deprecation_warning
     def imageDelete(self, ir: Image):
