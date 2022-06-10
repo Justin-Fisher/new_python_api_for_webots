@@ -5,25 +5,6 @@
 __author__ = "Justin C. Fisher"
 
 #/*
-# * Copyright 2021-2022. Justin Fisher.
-# *
-# * Licensed under the Apache License, Version 2.0 (the "License");
-# * you may not use this file except in compliance with the License.
-# * You may obtain a copy of the License at
-# *
-# *     http://www.apache.org/licenses/LICENSE-2.0
-# *
-# * Unless required by applicable law or agreed to in writing, software
-# * distributed under the License is distributed on an "AS IS" BASIS,
-# * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# * See the License for the specific language governing permissions and
-# * limitations under the License.
-# */
-
-
-__author__ = "Justin C. Fisher"
-
-#/*
 # * Copyright 2020-2022. Justin Fisher.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
@@ -55,6 +36,8 @@ from descriptors import descriptor, cached_property  # more options than python'
 from surrogate_values import SurrogateValue, surrogate_attribute
 from vectors import Vector
 from devices import *
+
+_permitted_to_alter_robot_attributes = True  # any caller with this in its globals won't trigger warnings
 
 # === Claim control of robot (allows wb.functions to work) ===
 
@@ -122,6 +105,9 @@ class RobotPseudoSensor(Sensor, auto_link_wb_methods = False):
         globals()[ self._robot_attribute ] = self
 
     def __repr__(self): return self._robot_attribute # e.g. 'keyboard'
+
+    if setattr_with_warnings:
+        __setattr__ = setattr_with_warnings
 
 
 class Battery(RobotPseudoSensor, SurrogateValue):
@@ -522,6 +508,11 @@ class RobotModule(ModuleType):
     EVENT_JOYSTICK_POV = WB_EVENT_JOYSTICK_POV
 
     _instance: 'RobotModule' # will store the single instance of this class, the module named 'robot'
+
+    if setattr_with_warnings:
+        __setattr__ = setattr_with_warnings
+
+    def __repr__(self): return f"robot({self.name})"
 
     # --- robot time information ---
 

@@ -30,6 +30,10 @@ from typing import List, Tuple, Set, Union, Optional, Callable, Any, Sequence, I
 from ctypes import c_int, c_double, c_float, c_bool, c_char_p, c_void_p, POINTER, c_char, c_ubyte
 import re
 
+# Conditional Imports:
+# import sys    # will occur below if settings.warn_when_setting_unexpected_device_attributes
+# import numpy  # will occur below if certain functions are called, like camera.array
+
 import core_api
 from core_api import *  # imports WB constants and the ctypes library wb, and timed_cached_property
 from webots_warnings import Warn, WarnOnce, use_docstring_as_deprecation_warning
@@ -64,6 +68,46 @@ def snake_case(name):
     stripped_name = name.lstrip('_')
     under_prefix = '_' * (len(name) - len(stripped_name))
     return under_prefix + re.sub('([A-Z])[a-z]', lambda cap: '_'+cap[0].lower(), stripped_name).lstrip('_')
+
+# === Issuing Warnings when users set unexpected attributes ===
+
+# If the settings say to warn_when_setting_unexpected_attributes, then we intercept all attempts to
+# set device attributes and check that either (a) the caller has _permitted_to_alter_robot_attributes among
+# its globals (or has globals that we can't find, in some versions of Python), or (b) the attribute being altered
+# is a class property with a getter/setter that should be prepared to handle this.  Otherwise, a warning is issued.
+# This should help to catch instances where (1) a user alters sensitive attributes they shouldn't be messing
+# with, or (2) a user misspells an attribute that they meant to set, which otherwise would have just silently
+# created a new attribute with that misspelled name which would be hard to debug.
+# We define a version of __setattr__ that delivers such warnings here, and then relevant classes will install it.
+setattr_with_warnings = None
+if settings.warn_when_setting_unexpected_attributes:
+    import sys
+    _get_current_frame: Callable = getattr(sys, '_getframe', None)
+    _permitted_to_alter_robot_attributes = True  # any caller with this in its globals won't trigger warnings
+
+    if _get_current_frame is None:
+        Warn("settings.warn_when_setting_unexpected_attributes is True, but this implementation of Python "
+             "does not allow getting the current frame, so no such warnings will be issued.")
+    else:
+        def setattr_with_warnings(self, attr, value):
+            frame = _get_current_frame(1)
+            has_permission = True  # Caller counts as permitted unless we can see they're calling from foreign frame
+            try:
+                if frame and '_permitted_to_alter_robot_attributes' not in frame.f_globals:
+                    has_permission = False
+            finally:
+                del frame  # keeping frames around can cause python memory bloat, so we delete quickly to be safe
+
+            if not has_permission:  # it'd be okay for someone w/out permission to set property with getter/setter
+                class_attr = getattr(type(self), attr, None)  # properties would be defined on the class
+                if class_attr is not None and (hasattr(class_attr, '__get__') or hasattr(class_attr, '__set__')):
+                    has_permission = True
+
+            if not has_permission:
+                WarnOnce(f"{self.__repr__()}.{attr} has been set to a new value by something "
+                         f"that likely shouldn't be doing this!")
+
+            object.__setattr__(self, attr, value)
 
 
 # === General Device SuperClasses ================
@@ -237,13 +281,15 @@ class Device(metaclass=MetaDevice):
 
     # Todo: should I leave .name as an attribute set on creation, or make it a property that looks itself up again?
 
+    if setattr_with_warnings:
+        __setattr__ = setattr_with_warnings
+
     wb.wb_device_get_name.restype = c_char_p
     @cached_property
     def name(self):
         """The value of this device's name field in the Webots simulation at the time of first access.
            This will typically still be the current value of its name field, unless a supervisor renamed it."""
         return wb.wb_device_get_name(self.tag).decode()
-
     @use_docstring_as_deprecation_warning
     def getName(self):
         """DEPRECATED: Device.getName() is deprecated. Please use device.name.
@@ -256,7 +302,6 @@ class Device(metaclass=MetaDevice):
     def model(self) -> str:
         """Returns the contents of the model field of this device's node in the simulation."""
         return wb.wb_device_get_model(self.tag)
-
     @use_docstring_as_deprecation_warning
     def getModel(self) -> str:
         """DEPRECATED. device.getModel() is deprecated. Please use device.model instead."""
@@ -283,6 +328,11 @@ class Device(metaclass=MetaDevice):
            number of devices in this robot.  robot.Device(index) or robot.devices[index] can be used to retrieve
            a device by its index, and len(robot.devices) is the total number of devices in this robot."""
         return self.tag - 1  # indices are 0-indexed, whereas tags are 1-indexed
+
+
+
+
+
 
 class Sensor():
     """This abstract class includes Devices and other entities that have similar methods to read and alter their

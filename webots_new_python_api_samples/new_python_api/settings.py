@@ -29,6 +29,16 @@ false_step_return_value = -1  # Specifies what return value from robot.step and 
                               # fine to continue, and "False" when the controller should stop. In earlier versions of
                               # Webots, the return value would be "True" if non-zero which may not be so useful.
 
+# === robot module settings ===
+
+warn_when_setting_unexpected_attributes = True  # Must be changed before importing robot (or world)! When true, setting
+                                                # device.foo = n will issue a warning if foo isn't a property;
+                                                # helpful for protecting sensitive attributes and catching misspelled
+                                                # names, which otherwise would silently create new attributes; but this
+                                                # incurs a slight performance cost or could be annoying if you want to
+                                                # live dangerously and meddle within the Python controller.
+                                                # Warnings apply to robot, robot devices, and robot pseudodevices.
+
 # === world module settings ===
 
 use_nodes_are_hidden = 0.5  # 0 = always visible, 1 = always hidden, 0.5 = effectively hidden til accessed, then visible
