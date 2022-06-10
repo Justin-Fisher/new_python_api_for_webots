@@ -89,8 +89,8 @@ if settings.warn_when_setting_unexpected_attributes:
         Warn("settings.warn_when_setting_unexpected_attributes is True, but this implementation of Python "
              "does not allow getting the current frame, so no such warnings will be issued.")
     else:
-        def setattr_with_warnings(self, attr, value):
-            frame = _get_current_frame(1)
+        def setattr_with_warnings(self, attr, value, nesting=1):
+            frame = _get_current_frame(nesting)
             has_permission = True  # Caller counts as permitted unless we can see they're calling from foreign frame
             try:
                 if frame and '_permitted_to_alter_robot_attributes' not in frame.f_globals:
@@ -105,7 +105,7 @@ if settings.warn_when_setting_unexpected_attributes:
 
             if not has_permission:
                 WarnOnce(f"{self.__repr__()}.{attr} has been set to a new value by something "
-                         f"that likely shouldn't be doing this!")
+                         f"that likely shouldn't be doing this! Perhaps a misspelling?")
 
             object.__setattr__(self, attr, value)
 
@@ -3295,7 +3295,6 @@ class Brush(metaclass=MetaBrush):
             #  self_settings = {k:v for k in Brush.default_settings if (v:=getattr(self, k, None)) is not None}
     settings = SettingsDescriptor()
 
-
     def copy(self: Union['Brush', type], display=None, weight=None):
         """This can be called as brush.copy() or as Brush.copy(brush_or_brushtype).  Returns a new token of the same
            brushtype as the given argument (which may be a brush or a brushtype), but with given display (defaults
@@ -3334,7 +3333,10 @@ class Brush(metaclass=MetaBrush):
                     value = Vector(value)
             setattr(type(self), key, value)
         else:
-            super().__setattr__(key, value)
+            if settings.warn_when_setting_unexpected_attributes:
+                setattr_with_warnings(self, key, value, nesting=2)  # nesting=2 because we're level 1 and we don't count
+            else:
+                super().__setattr__(key, value)
 
     @staticmethod
     def process_settings(settings: dict) -> dict:
