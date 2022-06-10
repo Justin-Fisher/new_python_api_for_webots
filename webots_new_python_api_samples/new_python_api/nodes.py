@@ -40,19 +40,21 @@ __author__ = "Justin C. Fisher"
 
 import itertools
 import textwrap
-from typing import Union, Callable, Iterable, Dict, List, Tuple, Any, Sequence, Iterator, Container, Mapping, Collection
+from typing import Union, Callable, Iterable, Dict, List, Tuple, Any, Sequence, Iterator, Container, Mapping, \
+    Collection, overload
 from pathlib import Path as _pathlib_Path  # an acceptable way of designating a .wbo file to import as a Node
 import ctypes
-from ctypes import c_double, c_bool, c_char_p, c_void_p, POINTER as c_pointer
+from ctypes import c_double, c_bool, c_char_p, c_void_p, c_int, POINTER
 import re
 
 import settings
 from core_api import wb, Console, timed_cached_property
 import WB_CONSTANTS as _WB
 from dictset import DictSet
-from vectors import GenericVector, Vector, Color, Rotation, Vec2f, Vec3f, Vec4f, Vec2f_p, Vec3f_p, Vec4f_p, Iterable2f, Iterable3f, Iterable4f
+from vectors import GenericVector, Vector, Color, Rotation, Vec2f, Vec3f, Vec4f, Vec2f_p, Vec3f_p, Vec4f_p, Iterable2f, \
+    Iterable3f, Iterable4f, VectorValue
 from webots_warnings import Warn, WarnOnce, use_docstring_as_deprecation_warning
-from descriptors import descriptor, cached_property
+from descriptors import descriptor, cached_property, documented_attribute
 from devices import Device
 import nodetypes
 
@@ -1312,56 +1314,184 @@ class Node:
 
     # --- Node Contact Points ---
 
-    # TODO this likely needs a lot of work
-    class ContactPoint:
-        def __init__(self):
-            pass
+    class Contact(Sequence['Node.Contact.Point']):
+        """A container interface for a node's Contact.Points. Accessed via Node.contact_points."""
 
-        def __repr__(self): return "ContactPoint"  # TODO make this more informative
+        @documented_attribute
+        def include_descendants(self) -> bool:
+            """Reading or setting `node.contact_points.include_descendants` reads or alters whether contacts involving
+               this node's descendants are counted among this node's own .contact_points. Typically True or False."""
+            return True
 
-        # point = property(wb.wb_contact_point_point_getXXX, wb.wb_contact_point_point_setXXX)
-        # node_id = property(wb.wb_contact_point_node_id_getXXX, wb.wb_contact_point_node_id_setXXX)
+        def __init__(self, node: 'Node'):
+            self.node = node
+            self._as_parameter_ = self.node._as_parameter_
 
-        def get_point(self):
-            return wb.wb_contact_point_get_pointXXX(self)
+        def __call__(self,  sampling:Union[int, bool, None] = None, include_descendants=True) -> 'Contact':
+            """`n.contact_points(sampling=False, include_descendants=True)` returns the same container-like Contact
+               object as n.contact_points does, and is a convenience method for initializing its .include_descendants
+               and .sampling. These settings will remain until altered, so after they are set as you like, you may
+               simply employ n.contact_points itself."""
+            if self.include_descendants != include_descendants:
+                self.include_descendants = include_descendants
+                # remove cached .value, since it would change after altering whether to include d's
+                if 'value' in self.__dict__: del self.__dict__['value']
+            if sampling != self.sampling: self.sampling = sampling
+            return self
 
-        def get_node_id(self):
-            return wb.wb_contact_point_get_node_idXXX(self)
+        def __repr__(self):
+            return f"{self.node}.contact_points[0:{len(self)}]"
 
+        def __len__(self) -> int:
+            return len(self.value)
+
+        class Point(ctypes.Structure, VectorValue):
+            """A Node.Contact.Point indicates a point of contact between this node and another.
+               `point.value` returns the coordinates of the point of contact.  The point itself serves as a
+                surrogate for this .value, so you can do standard vector arithmetic with points, or use helper
+                functions like point.x, point.angle, and point.distance.
+               `point.node` returns the Node that is being contacted.
+               `point.node_id` returns the unique id of that node."""
+
+            # Declare fields for c_types conversion from C-API
+            _fields_ = [('value', Vec3f),
+                        ('node_id', c_int)]
+
+            # Re-declare attributes for Python linters
+            value: Vec3f
+            node_id: int
+
+            def __repr__(self): return f"Contact.Point({self.x}, {self.y}, {self.z})"
+
+            @property
+            def node(self):
+                """Returns the Node in which the contact is occuring (this node or one of its descendants)."""
+                return Node(self.node_id)
+
+            @use_docstring_as_deprecation_warning
+            def get_point(self):
+                """DEPRECATED. Node.ContactPoint.get_point() and Node.ContactPoint.point are deprecated. Use
+                   pt.value instead, or for most purposes a ContactPoint serves as a surrogate for its own .value."""
+                return self.value
+            point = property(get_point)
+
+            @use_docstring_as_deprecation_warning
+            def get_node_id(self):
+                """DEPRECATED. Node.ContactPoint.get_node_id() is deprecated. Use point.node_id instead.
+                   Or use point.node if you want the node itself and not just its id."""
+                return self.node_id
+            # The old node_id property still works in the new API
+
+        _count = c_int()                   # create a destination for get_contact_points to store its count into
+        _count_ptr = ctypes.byref(_count)  # and a pointer to this destination for us to pass to the C API
+
+        wb.wb_supervisor_node_get_contact_points.restype = POINTER(Point)
+        @timed_cached_property
+        def value(self) -> Sequence[Point]:
+            """Returns a ctypes array containing this node's Contact.Points. This and its constituent Points share
+               memory with the Webots simulation, so are very fast to access, but are valid only for the current timestep.
+               This is available as .value for anyone willing to risk accidentally preserving an invalid reference
+               to shared memory to gain a bit of speed. Most users should avoid `node.contact_points.value` and instead
+               use `for p in node.contact_points` or `node.contact_points[i]` which return stable copies of points,
+               and hence avoid any worries about accidentally preserving a reference to expired shared memory."""
+            list_ptr = wb.wb_supervisor_node_get_contact_points(self.node._as_parameter_,
+                                                                c_bool(self.include_descendants),
+                                                                self._count_ptr)
+            if not list_ptr: return []
+            c_arraytype = self._count.value * Node.Contact.Point
+            return ctypes.cast(list_ptr, POINTER(c_arraytype))[0]
+
+        @overload  # contact_points[index] returns a copy of a Point
+        def __getitem__(self, item: int) -> Point: pass
+        @overload  # contact_points[slice] returns a list of copied Points
+        def __getitem__(self, item: slice) -> List[Point]: pass
+        def __getitem__(self, item):
+            if isinstance(item, int):  # contact_points[index] returns a copy of that pixel
+                return Node.Contact.Point.from_buffer_copy(self.value[item])
+            else:                      # contact_points[slice] returns a list of copied pixels
+                return [Node.Contact.Point.from_buffer_copy(p) for p in self.value[item]]
+
+        wb.wb_robot_get_basic_time_step.restype = c_double
         @property
-        def point(self):
-            return self.get_point()
+        def sampling(self):
+            """`n.contact_points.sampling` (aka "tracking") is quite similar to `sensor.sampling` though enabling this
+               beforehand is not a requirement for reading contact_points, but does serve to speed access to them.
+               Unlike `sensor.sampling` this will not automatically be enabled, but, like `sensor.sampling`, you may
+               enable tracking to occur periodically with `n.contact_points.sampling = period_ms` or can set it to
+               `True` to use the basic timestep as the tracking period, or to `None` to disable automatic tracking
+               (slightly speeding the simulation, if, and *only* if, you won't use `contact_points` much afterward)."""
+            return self.__dict__.get('sampling', None)
+        @sampling.setter
+        def sampling(self, new_period:Union[int, bool, None]):
+            if new_period is True: new_period = wb.wb_robot_get_basic_time_step()
+            self.__dict__['sampling'] = new_period  # remember this value so that future read attempts will read it
+            if new_period:
+                wb.wb_supervisor_field_enable_sf_tracking(self._as_parameter_, new_period)
+            else:
+                wb.wb_supervisor_field_disable_sf_tracking(self._as_parameter_)
+        tracking = sampling
 
-    def enableContactPointsTracking(self, *args):
-        return wb.wb_supervisor_node_enable_contact_points_trackingXXX(self._as_parameter_, *args)
+        def disableContactPointsTracking(self, *args):
+            return wb.wb_supervisor_node_disable_contact_points_trackingXXX(self._as_parameter_, *args)
 
-    def disableContactPointsTracking(self, *args):
-        return wb.wb_supervisor_node_disable_contact_points_trackingXXX(self._as_parameter_, *args)
+    @cached_property
+    def contact_points(self) -> Contact:
+        """`n.contact_points` returns a sequence-like object whose contents are node n's Contact.Points.
+           `n.contact_points(sampling=None, include_descendants=True)` also returns this same object, and is a
+           convenience method for initializing its .sampling and .include_descendants, described below.
+           `n.contact_points.include_descendants` reads or alters whether contacts involving node n's descendants
+           will be counted among n's own .contact_points (default is True).
+           `len(n.contact_points)` returns how many contact points this node currently has. (This does not actually
+           actually copy any contact points from the simulation, so is quite fast.)
+           `n.contact_points[i]` or `n.contact_points[i:j]` index or slice the contact points.
+           `for point in n.contact_points` iterates through the contact points.
+           Each point is a vector-like surrogate for its xyz coordinates, and point.node is the node being contacted.
+           `n.contact_points.sampling` is quite similar to `sensor.sampling` though enabling this beforehand is not
+           a requirement for reading contact_points, but does serve to speed access to them.  Unlike `sensor.sampling`
+           this will not automatically be enabled, but, like `sensor.sampling`, you may enable tracking to occur
+           periodically with `n.contact_points.sampling = period_ms` or can set it to `True` to use the basic timestep
+           as the tracking period, or to `None` to disable automatic tracking (slightly speeding up the simulation,
+           if, and *only* if, you won't use `contact_points` much afterwards)."""
+        return Node.Contact(self)
 
-    def getContactPoint(self, index):
-        return wb.wb_supervisor_node_get_contact_point(self._as_parameter_, index)
+    # --- Node.contact_points deprecated methods ---
 
-    def getContactPointNode(self, index):
-        return wb.wb_supervisor_node_get_contact_point_node(self._as_parameter_, index)
+    @use_docstring_as_deprecation_warning
+    def enableContactPointsTracking(self, period=True, include_descendants=True):
+        """DEPRECATED. Node.enableContactPointsTracking() is deprecated.
+           Please use n.contact_points(period, include_descendants) instead."""
+        self.contact_points(sampling=period, include_descendants=include_descendants)
 
-    def getNumberOfContactPoints(self, includeDescendants=False) -> int:
-        return wb.wb_supervisor_node_get_number_of_contact_points(self._as_parameter_, includeDescendants)
+    @use_docstring_as_deprecation_warning
+    def disableContactPointsTracking(self, include_descendants=True):
+        """DEPRECATED. Node.disableContactPointsTracking() is deprecated. Use n.contact_points.sampling = None."""
+        self.contact_points(sampling=None, include_descendants=include_descendants)
 
-    def getContactPointsPrivate(self, includeDescendants):
-        return wb.wb_supervisor_node_get_contact_points_privateXXX(self._as_parameter_, includeDescendants)
+    @use_docstring_as_deprecation_warning
+    def getContactPoint(self, index) -> Contact.Point:
+        """DEPRECATED. Node.getContactPoint(i) is deprecated.  Please use node.contact_points[i] instead."""
+        return self.contact_points[index]
 
-    def getContactPoints(self, includeDescendants=False):
-        point_data = self.getContactPointsPrivate(includeDescendants)
-        if not point_data:
-            return []
-        ret = []
-        points, size = point_data
-        for i in range(size):
-            ret.append(self._as_parameter_.getContactPointFromList(points, i))
-        return ret
+    @use_docstring_as_deprecation_warning
+    def getContactPointNode(self, index) -> int:
+        """DEPRECATED. Node.getContactPointNode(i) is deprecated.  Please use node.contact_points[i].node_id instead.
+           Or use .node rather than .node_id if you want the node itself, rather than just its id."""
+        return self.contact_points[index].node_id
 
-    def getContactPointFromList(self, points, index):
-        return wb.wb_supervisor_node_get_contact_point_fromListXXX(self._as_parameter_, points, index)
+    @use_docstring_as_deprecation_warning
+    def getNumberOfContactPoints(self, include_descendants=False) -> int:
+        """DEPRECATED. Node.getNumberOfContactPoints() is deprecated.  Please use len(node.contact_points) instead."""
+        return len(self.contact_points(include_descendants=include_descendants))
+
+    @use_docstring_as_deprecation_warning
+    def getContactPoints(self, includeDescendants=False) -> Contact:
+        """DEPRECATED. Node.getContactPoints() is deprecated.  Please use node.contact_points instead."""
+        return self.contact_points
+
+    @use_docstring_as_deprecation_warning
+    def getContactPointFromList(self, points: Sequence[Contact.Point], index:int) -> Contact.Point:
+        """DEPRECATED. Node.getContactPointFromList() is deprecated. You probably want node.contact_points[i]"""
+        return points[index]
 
     # --- Node poses ---
 
@@ -2340,7 +2470,7 @@ class Field:
            Reading sf_field.sampling returns the last value it was set to (initially None)."""
         return self.__dict__.get('sampling', None)
     @sampling.setter
-    def sampling(self, new_period):
+    def sampling(self, new_period: Union[int, bool, None]):
         if new_period is True: new_period = wb.wb_robot_get_basic_time_step()
         self.__dict__['sampling'] = new_period  # remember this value so that future read attempts will read it
         if new_period:

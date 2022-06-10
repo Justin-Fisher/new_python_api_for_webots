@@ -36,7 +36,7 @@ from webots_warnings import Warn, WarnOnce, use_docstring_as_deprecation_warning
 from surrogate_values import SurrogateValue, surrogate_attribute
 from descriptors import descriptor, cached_property # more options than python's @property
 from vectors import Vector, Color, VectorValue, Vec3f, Vec4f, Iterable2f, Iterable3f, Iterable4f, ColorBGRA, \
-    GenericVector, Vec2i, Color3f, Color3f_p, Rotation, Vec2f
+    GenericVector, Vec2i, Color3f, Color3f_p, Rotation, Vec2f, Vec3half
 
 # --- Additional types that can't simply be imported ---
 
@@ -968,10 +968,10 @@ class ImageContainer(Generic[ImagePixelType]):
 
     @timed_cached_property
     def value(self) -> Sequence[Sequence[ImagePixelType]]:
-        """It is generally advised to use the ImageContainer itself, e.g., `camera` rather than its .value, since
-           the ImageContainer provides more iteration options, more indexing options (including `camera[y,x]`) and
-           automatically returns copies of complex pixel values to avoid worries about accidentally keeping a value
-           that shares memory that will expire.  If you're sure you won't need these conveniences and safety,
+        """It is generally advised to use the ImageContainer itself, e.g., `camera` or 'lidar.cloud', rather than
+           its .value, since the ImageContainer provides more iteration and indexing options, and automatically
+           returns stable copies of complex pixel values to avoid worries about accidentally keeping a value that
+           shares memory that will expire.  If you're sure you won't need these conveniences and safety,
            it can be slightly faster to work with the raw camera.value. However if speed is important, it will
            typically be faster still to use numpy and/or opencv to work with camera.array!
            Returns the current image of this ImageContainer as a 2D ctypes array of rows of pixels that share memory
@@ -980,7 +980,7 @@ class ImageContainer(Generic[ImagePixelType]):
            ColorBGRA for camera/segmentation images, and Lidar.Point for lidar point clouds.
            BEWARE: image.value[y] will return a 1D ctypes array that also shares memory with the image and hence with
            the simulation, so this row will also be valid only for this timestep.
-           Similarly, for complex pixel types (ColorBGRA and Lidar.Point) indexing image.value[y][x] returns a pixel
+           Similarly, for complex pixel types (ColorBGRA and Lidar.Point), indexing image.value[y][x] returns a pixel
            that also shares memory with its row, image, and webots, so also will be valid only until end of timestep.
            If you'll want to refer to such a row or pixel later, be sure to make a copy of it!"""
         width, height = self._get_width(self.tag), self._get_height(self.tag)
@@ -1003,7 +1003,7 @@ class ImageContainer(Generic[ImagePixelType]):
            use Row objects to mediate contact with the rows and pixels, and ensure that ordinary users deal only
            with stable objects that do not share memory and will not expire after the current timestep."""
 
-        def __init__(self, image:'ImageContainer', index:int):
+        def __init__(self, image:'ImageContainer[ImagePixelType]', index:int):
             self.image = image
             self.index = index
             self.neednt_copy_pixels = image.pixel_type is c_float
@@ -1012,8 +1012,6 @@ class ImageContainer(Generic[ImagePixelType]):
 
         @timed_cached_property
         def value(self) -> Sequence[ImagePixelType]:
-            v = self.image.value
-            w = v[self.index]
             return self.image.value[self.index]
 
         def __len__(self): return self.image.width
@@ -1026,15 +1024,16 @@ class ImageContainer(Generic[ImagePixelType]):
             if self.neednt_copy_pixels:  # ctypes will copy floats for us
                 return self.value[item]
             if isinstance(item, int):  # row[index] returns a copy of that pixel
-                return self.image.pixel_type(self.value[item])
+                return self.image.pixel_type.from_buffer_copy(self.value[item])
             else:                      # row[slice] returns a list of copied pixels
-                return [self.image.pixel_type(pixel) for pixel in self.value[item]]
+                return [self.image.pixel_type.from_buffer_copy(pixel) for pixel in self.value[item]]
 
     @cached_property
     def rows(self) -> List[Row[ImagePixelType]]:
         """A list of stable windows onto rows of this ImageContainer, which will remain uptodate even as the image
            changes.  Rather than returning pixels that share memory with the underlying image, indexing within
            these rows will instead return stable copies of those pixels."""
+        # TODO if a supervisor ever changes device.height, this would never catch up! A workaround is `del device.rows`
         return [self.Row(self, index) for index in range(self.height)]
 
     # Two-dimensional __getitem__ can return a variety of value types; we start by type-declaring them
@@ -1626,8 +1625,8 @@ class Lidar(ImageContainer[float], Device, Sensor):
          with Webots, so is valid only for the duration of this timestep. If you'll want access to this information
          later, you'll need to copy it. This array is a sequence of rows, where each row is a sequence of floats.
          This allows indexing by rows, then columns [y][x], but does not allow comma multi-indexing like [y,x].
-       `lidar.array` returns a view of the current readings as a Numpy array which shares memory with the simulation so is
-         extremely fast to create, but is valid only for the current timestep (extremely fast, but requires numpy)
+       `lidar.array` returns a view of the current readings as a Numpy array which shares memory with the simulation so
+         is extremely fast to create, but is valid only for the current timestep (extremely fast, but requires numpy)
        `lidar.copy()` returns a copy of the current readings that (unlike .value and .array) does not share memory with
          Webots' internal representation of the image, so is safe to use on future timesteps. This copy retains the
          same ImageContainer-interface as the Lidar itself. (fast, recommended way to copy outside numpy)
@@ -1648,14 +1647,14 @@ class Lidar(ImageContainer[float], Device, Sensor):
        and point.time to return the point's layer and detection time.
        You can do the standard ImageContainer things with lidar.cloud, like indexing (cloud[row] or cloud[row, x]),
        iterating (for row in cloud, or for x,y,point in cloud.enumerated) or fast Numpy conversion to cloud.array,
-       though note that this returns a (height x width x 3) array of x,y,z coordinates."""
+       though you will likely want to use `cloud.array['value']` to consider just the x,y,z .value of each point,
+       and/or `cloud.array['time'] to consider just the .time of each point."""
 
     # Provide key information for ImageContainer superclass to provide core functionality
     _get_width = wb.wb_lidar_get_horizontal_resolution
     _get_height = wb.wb_lidar_get_number_of_layers
     _get_image = wb.wb_lidar_get_range_image    # ImageContainer superclass will set restype for us
     pixel_type = c_float
-
 
     #--- Deprecated Lidar image dimensions (now given by ImageContainer superclass) ---
 
@@ -1799,34 +1798,28 @@ class Lidar(ImageContainer[float], Device, Sensor):
         _get_sampling = wb.wb_lidar_is_point_cloud_enabled
 
         class Point(ctypes.Structure, VectorValue):
-            """A Lidar.Cloud.Point is a member of a Lidar.Cloud, and indicates the coordinates of a surface-point
-               detected by Lidar, in the frame of reference of the Lidar's axes.
-               Each Point shares memory with the Webots simulation, which makes Clouds relatively quick to
-               access, but makes Clouds and their Points be valid only for the current timestep.  If you will
-               want to refer back to their values later, you'll need to make a copy, e.g. with Cloud.copy().
-               Lidar points are vector-like, so you can do standard vector arithmetic with them,
+            """A Lidar.Cloud.Point is a ctypes structure that indicates the coordinates of a surface-point
+               detected by Lidar, in the frame of reference of the Lidar's axes, as well as the layer_id of the
+               lidar layer that detected the point and the simulation .time at which that point was detected.
+               If you access a Point via `lidar.cloud.value`, the Point would share memory with `lidar.cloud.value`
+               and with the Webots simulation. This is very fast, but such a Point will be valid only for the
+               current timestep, so you must take care not to use it later.  For this reason, it is generally
+               recommended not to use `cloud.value` and to instead acquire Points via `for point in lidar.cloud.pixels`
+               or `lidar.cloud[y,x]`, which generate stable copies of Points that will remain usable indefinitely.
+               You can also use cloud.copy() to produce a stable copy of the whole cloud for later use.
+               Lidar.Points are vector-like, so you can do standard vector arithmetic with them,
                or use helper functions like point.angle and point.distance.  These vectorized ops consider only
                the .x, .y and .z of the Point and not its .layer_id and .time."""
 
             # Declare fields for c_types conversion from C-API
-            _fields_ = [('x', c_float),
-                        ('y', c_float),
-                        ('z', c_float),
+            _fields_ = [('value', Vec3half),
                         ('layer_id', c_int),
                         ('time', c_float)]
 
             # Re-declare attributes for Python linters
-            x: float
-            y: float
-            z: float
+            value: Vec3half
             layer_id: int
             time: float
-
-            @property
-            def value(self) -> Vector[float]:
-                """The xyz vector information about this Point.
-                   For most purposes, you can use each Point as a surrogate for this value."""
-                return Vector(self.x, self.y, self.z)
 
             def __repr__(self): return f"Lidar.Cloud.Point({self.x}, {self.y}, {self.z})"
 
@@ -1844,27 +1837,6 @@ class Lidar(ImageContainer[float], Device, Sensor):
 
         def __repr__(self):
             return f"{self.lidar}.cloud"
-
-        @property
-        def array(self):  # overriding superclass to return just xyz components
-            """If numpy is available, this returns a numpy array with shape (height, width, 3) whose last dimension
-               contains x,y,z values of points in this point cloud, as viewed from the lidar's frame of reference.
-               This array shares memory with the Webots simulation making it very fast to create, but also making it
-               valid only for this timestep.  If you'll want to refer to its values later, make a copy, e.g
-               with numpy's ndarray.copy().
-               Note: this array does not explicitly include each point's .layer_id (though that is implicit in each
-               point's location along the first/height axis of the array) nor does it contain each point's .time (since
-               numpy requires that array elements be evenly spaced in memory, and the .time value is not evenly
-               spaced with .x, .y, and .z, due to the intervening .layer_id which has an incompatible datatype).
-               If you want layer_id and time in numpy, use numpy.array(lidar.cloud.value, copy=False) to create a
-               numpy 2D structured array within which you may index ['layer_id'] and ['time'].  However this structured
-               array will not allow standard indexing or slicing along a third dimension, and cannot easily be made to
-               engage in vectorized operations due to the heterogeneity of its data, which is why lidar.cloud.array
-               returns the more homogenous and directly usable xyz-only version.
-               Requires numpy.  If numpy is not available this will raise an ImportError."""
-            import numpy as np
-            width, height = wb.wb_lidar_get_horizontal_resolution(self.tag), wb.wb_lidar_get_number_of_layers(self.tag)
-            return np.array(self.value, copy=False).view('<f4').reshape((height, width, 5))[:, :, :3]
 
         def color_image(self, x_min: float = ..., x_max: float = ..., x_color=(255, 0, 0),
                               y_min: float = ..., y_max: float = ..., y_color=(0, 0, 255),
@@ -1899,7 +1871,7 @@ class Lidar(ImageContainer[float], Device, Sensor):
             if z_max is ...: z_max =  r * math.sin(min(1.5708, self.lidar.vertical_fov/2))
             if z_min is ...: z_min = -r * math.sin(min(1.5708, self.lidar.vertical_fov/2))
 
-            xyz_1D = self.array.reshape(-1, 3)  # xyz_cloud as a long array of xyz triples
+            xyz_1D = self.array['value'].reshape(-1, 3)  # 'value' (xyz) part of cloud as long list of xyz triples
             interp  = np.interp(xyz_1D[:,0], (x_min, x_max), (0, 1), left=0, right=1).reshape(-1,1) * x_color
             interp += np.interp(xyz_1D[:,1], (y_min, y_max), (0, 1), left=0, right=1).reshape(-1,1) * y_color
             interp += np.interp(xyz_1D[:,2], (z_min, z_max), (0, 1), left=0, right=1).reshape(-1,1) * z_color
@@ -1907,7 +1879,6 @@ class Lidar(ImageContainer[float], Device, Sensor):
             out[...,3]=255 # set alpha to opaque
             out[...,:3] = interp.reshape(self.height, self.width, 3)
             return out
-
 
     @cached_property
     def cloud(self) -> Cloud:
@@ -1923,7 +1894,8 @@ class Lidar(ImageContainer[float], Device, Sensor):
            point.value), and also allow point.layer_id and point.time to return the point's layer and detection time.
            You can do the standard ImageContainer things with lidar.cloud, like indexing (cloud[row] or cloud[row, x]),
            iterating (for row in cloud, or for x,y,point in cloud.enumerated) or fast Numpy conversion to cloud.array,
-           though note that this returns a (height x width x 3) array of x,y,z coordinates."""
+           though you will likely want to use `cloud.array['value']` to consider just the x,y,z .value of each point,
+           and/or `cloud.array['time'] to consider just the .time of each point."""
         return Lidar.Cloud(self)  # now future references will retrieve this directly; automatically enables itself
 
     # --- Deprecated methods for handling Lidar.Clouds ---
@@ -3934,7 +3906,6 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
     initialized = False  # will be changed on first call to __init__
 
     def __init__(self, name_or_index: Union[str, int] = None):
-
         # Device() uses __new__ to find/construct devices, and each time this display gets found again, its __init__
         # will be called again.  So we take care to do one-time initialization steps just once.
         if not self.initialized:
@@ -3969,10 +3940,10 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
         self.opacity = opacity
 
     @use_docstring_as_deprecation_warning
-    def setFont(self, font: str, size: int, antiAliasing: bool):
+    def setFont(self, font: str, size: int, antialiasing: bool):
         """DEPRECATED: Display.setFont() is deprecated. Please use other options
            like display.set() with keywords font, fontsize and/or antialiasing."""
-        self.font, self.fontsize, self.antialiasing = font, size, bool(antiAliasing)
+        self.font, self.fontsize, self.antialiasing = font, size, bool(antialiasing)
 
     # --- display dimensions ---
 
@@ -3980,6 +3951,12 @@ class Display(Brush, Device, metaclass=MetaBrushDevice):
     def size(self) -> Vector:
         """Returns the dimensions of this display as a [width, height] vector."""
         return Vector(wb.wb_display_get_width(self.tag), wb.wb_display_get_height(self.tag))
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """Returns the dimensions of this display as a (height, width) tuple, which is the .shape of a NumPy
+           array, or Camera, or other ImageContainer, that could be pasted to fill this display."""
+        return (wb.wb_display_get_height(self.tag), wb.wb_display_get_width(self.tag))
 
     @property
     def width(self) -> int:

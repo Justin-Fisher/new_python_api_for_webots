@@ -156,6 +156,13 @@ def cached_property(fn):
        Equivalent to Python 3.8 functools.cached_property, but also works in earlier versions."""
     return descriptor( fn, protected = False, prioritized=False, cached=True )
 
+def documented_attribute(fn):
+    """A low priority descriptor that stores its return value as the corresponding instance-attribute so future
+       attempts to retrieve this value will get this cached value directly without retriggering the property getter.
+       This allows setting of the attribute to a new value. Used primarily to associate a docstring with an attribute,
+       and to hint that this property is reasonable to use. (Equivalent to a cached_property.)"""
+    return descriptor( fn, protected = False, prioritized=False, cached=True )
+
 #TODO at some point should probably provide deleter options
 
 # TODO not sure this is actually used or needed

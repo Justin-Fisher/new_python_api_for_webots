@@ -91,7 +91,10 @@ class timed_cached_property:
     def __get__(self, instance, cls=None):
         if instance is None: return self # C.f returns descriptor itself
         if time <= instance.__dict__.get(self.update_name, -1):
-            return instance.__dict__[self.__name__]
+            try:
+                return instance.__dict__[self.__name__]
+            except KeyError:  # If the value is not there, someone probably decached it; we can (re)generate it below
+                pass
         value = self._getter(instance)
         instance.__dict__[self.__name__] = value # cache value f(i) as i.f
         instance.__dict__[self.update_name ] = time

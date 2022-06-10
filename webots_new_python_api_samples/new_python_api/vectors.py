@@ -26,7 +26,7 @@ import operator
 from math import sin, cos, acos, sqrt, atan2, trunc, floor, ceil
 from typing import Sequence, Iterable, TypeVar, Generic, overload, Container
 import sys
-from ctypes import c_double, c_void_p, POINTER, c_ubyte, c_int
+from ctypes import c_double, c_void_p, POINTER, c_ubyte, c_int, c_float
 from typing import List, Tuple, Set, Union, Optional
 
 if sys.version_info < (3, 6, 0):
@@ -591,6 +591,14 @@ class Vec3f(CTypesVector, c_double*3):
        a .fromaddress class method that can be used to receive one of these through a ctypes .dll."""
     _length = 3
 Vec3f_p = POINTER(Vec3f)
+
+@Sequence.register
+class Vec3half(CTypesVector, c_float*3):
+    """This is a 3-component Vector whose content is contained in a ctypes array of 3 half-precision ctypes.c_float's.
+       In addition to Vector functionality, this also inherits ctypes array functionality, including
+       a .fromaddress class method that can be used to receive one of these through a ctypes .dll."""
+    _length = 3
+Vec3half_p = POINTER(Vec3half)
 
 class Color3f(Vec3f, GenericColor):
     """This is a 3-component Vector whose content is contained in a ctypes array of 3 ctypes.c_double floats.
